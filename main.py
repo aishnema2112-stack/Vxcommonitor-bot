@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import re
 import threading
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -49,20 +50,20 @@ INSTAGRAM_SESSION_ID = "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAo
 CHECK_INTERVAL_SECONDS = 20
 DB_FILE = "dual_tracker_db.json"
 
-# Visual Media: Direct Anime MP4 Videos / Clips
+# Anime Direct MP4 Clips
 MONITORING_VIDEO = "https://assets.mixkit.co/videos/preview/mixkit-digital-animation-of-screens-996-large.mp4"
 UNBANNED_VIDEO = "https://assets.mixkit.co/videos/preview/mixkit-stars-in-space-background-1610-large.mp4"
 BANNED_VIDEO = "https://assets.mixkit.co/videos/preview/mixkit-glitch-screen-effect-28795-large.mp4"
 # --------------------------------------------------
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 
 try:
     bot.set_my_commands([
         types.BotCommand("ub", "Monitor account for recovery / unban"),
         types.BotCommand("b", "Monitor account for ban"),
         types.BotCommand("status", "Show active monitored accounts"),
-        types.BotCommand("owner", "Bot Developer & Credits"),
+        types.BotCommand("owner", "Developer & Credits"),
         types.BotCommand("help", "Help & guide")
     ])
 except Exception:
@@ -112,67 +113,77 @@ def format_time_taken(seconds_elapsed):
     parts.append(f"{seconds}s")
     return " ".join(parts) if parts else "0s"
 
-# ----------------- ACCURATE LIVE DETAILS CHECKER -----------------
+# ----------------- ROBUST USERNAME PARSER -----------------
+def extract_username(message):
+    if not message.text:
+        return None
+    parts = message.text.split()
+    if len(parts) < 2:
+        return None
+    raw_user = parts[1].strip().lower().replace("@", "")
+    # Clean validation for letter + number + dots + underscores
+    clean = re.sub(r'[^a-z0-9._]', '', raw_user)
+    return clean if clean else None
+
+# ----------------- BULLETPROOF LIVE DETAILS CHECKER -----------------
 def get_instagram_details(username):
-    username = username.strip().lower().replace("@", "")
     ds_user_id = INSTAGRAM_SESSION_ID.split(":")[0] if ":" in INSTAGRAM_SESSION_ID else ""
 
-    # Method 1: Mobile API (Best for Exact Numbers)
+    # Method 1: Web Profile Info GraphQL API
     try:
-        url = f"https://i.instagram.com/api/v1/users/{username}/usernameinfo/"
+        web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
         headers = {
-            "User-Agent": "Instagram 278.0.0.19.115 Android (33/13; 440dpi; 1080x2400; Xiaomi; Redmi Note 12; sweet; qcom; en_US; 458229237)",
-            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};",
-            "X-IG-App-ID": "936619743392459"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+            "x-ig-app-id": "936619743392459",
+            "Referer": f"https://www.instagram.com/{username}/",
+            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};"
         }
-        res = requests.get(url, headers=headers, timeout=8)
+        res = requests.get(web_url, headers=headers, timeout=8)
         if res.status_code == 200:
-            user = res.json().get("user", {})
-            if user:
-                followers = user.get("follower_count")
-                following = user.get("following_count")
+            data = res.json().get("data", {}).get("user")
+            if data:
+                f_by = data.get("edge_followed_by", {}).get("count", 0)
+                f_to = data.get("edge_follow", {}).get("count", 0)
                 return {
                     "active": True,
-                    "followers": f"{followers:,}" if isinstance(followers, int) else str(followers),
-                    "following": f"{following:,}" if isinstance(following, int) else str(following)
+                    "followers": f"{f_by:,}",
+                    "following": f"{f_to:,}"
                 }
         elif res.status_code == 404:
             return {"active": False, "followers": "0", "following": "0"}
     except Exception:
         pass
 
-    # Method 2: Web Profile Info API Layer
+    # Method 2: Mobile App Internal API
     try:
-        web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        web_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "x-ig-app-id": "936619743392459",
-            "Referer": f"https://www.instagram.com/{username}/",
-            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};"
+        app_url = f"https://i.instagram.com/api/v1/users/{username}/usernameinfo/"
+        app_headers = {
+            "User-Agent": "Instagram 300.0.0.29.110 Android (33/13; 440dpi; 1080x2400; Xiaomi; sweet; en_US; 514229237)",
+            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};",
+            "X-IG-App-ID": "936619743392459"
         }
-        w_res = requests.get(web_url, headers=web_headers, timeout=8)
-        if w_res.status_code == 200:
-            u_data = w_res.json().get("data", {}).get("user")
-            if u_data:
-                f_by = u_data.get("edge_followed_by", {}).get("count", 0)
-                f_to = u_data.get("edge_follow", {}).get("count", 0)
+        res2 = requests.get(app_url, headers=app_headers, timeout=8)
+        if res2.status_code == 200:
+            user = res2.json().get("user", {})
+            if user:
+                f_by = user.get("follower_count", 0)
+                f_to = user.get("following_count", 0)
                 return {
                     "active": True,
-                    "followers": f"{f_by:,}",
-                    "following": f"{f_to:,}"
+                    "followers": f"{f_by:,}" if isinstance(f_by, int) else str(f_by),
+                    "following": f"{f_to:,}" if isinstance(f_to, int) else str(f_to)
                 }
-            return {"active": False, "followers": "0", "following": "0"}
-        elif w_res.status_code == 404:
+        elif res2.status_code == 404:
             return {"active": False, "followers": "0", "following": "0"}
     except Exception:
         pass
 
-    # Method 3: Meta oEmbed Verification Fallback
+    # Method 3: Meta oEmbed Verification Layer
     try:
         oembed_url = f"https://api.instagram.com/oembed/?url=https://www.instagram.com/{username}/"
         r = requests.get(oembed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
         if r.status_code == 200:
-            return {"active": True, "followers": "Active", "following": "Active"}
+            return {"active": True, "followers": "Active Account", "following": "Active Account"}
         elif r.status_code == 404:
             return {"active": False, "followers": "0", "following": "0"}
     except Exception:
@@ -186,7 +197,7 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # 1. Unban (/ub) Check
+            # 1. Unban (/ub) Checking
             unban_list = list(db.get("unban_monitors", {}).items())
             for username, info in unban_list:
                 status = get_instagram_details(username)
@@ -196,18 +207,18 @@ def monitor_loop():
                     req_time = info.get("requested_time", "N/A")
                     req_date = info.get("requested_date", get_current_date_str())
                     unban_time = get_current_time_str()
-                    user_mention = f'<a href="tg://user?id={info["user_id"]}">{info.get("user_name", "User")}</a>'
+                    user_name = info.get("user_name", "User")
 
                     caption = (
-                        f"⚡ <b>Instagram Account Recovered / Unbanned!</b>\n\n"
-                        f"👤 <b>Target:</b> <b>@{username}</b>\n"
-                        f"👥 <b>Followers:</b> <code>{status['followers']}</code> | <b>Following:</b> <code>{status['following']}</code>\n"
-                        f"⏱ <b>Total Time Taken:</b> {time_str}\n"
-                        f"📅 <b>Requested Date:</b> {req_date}\n"
-                        f"🕒 <b>Requested Time:</b> {req_time}\n"
-                        f"✅ <b>Recovered at:</b> {unban_time}\n"
-                        f"👑 <b>Requested by:</b> {user_mention}\n\n"
-                        f"🛡️ <i>Developed by:</i> {DEVELOPER_TAG}"
+                        "⚡ Instagram Account Recovered / Unbanned!\n\n"
+                        f"👤 Target: @{username}\n"
+                        f"👥 Followers: {status['followers']} | Following: {status['following']}\n"
+                        f"⏱ Total Time Taken: {time_str}\n"
+                        f"📅 Requested Date: {req_date}\n"
+                        f"🕒 Requested Time: {req_time}\n"
+                        f"✅ Recovered at: {unban_time}\n"
+                        f"👑 Requested by: {user_name}\n\n"
+                        f"🛡️ Developed by: {DEVELOPER_TAG}"
                     )
 
                     try:
@@ -227,7 +238,7 @@ def monitor_loop():
 
                 time.sleep(2)
 
-            # 2. Ban (/b) Check
+            # 2. Ban (/b) Checking
             ban_list = list(db.get("ban_monitors", {}).items())
             for username, info in ban_list:
                 status = get_instagram_details(username)
@@ -240,20 +251,20 @@ def monitor_loop():
                         req_time = info.get("requested_time", "N/A")
                         req_date = info.get("requested_date", get_current_date_str())
                         ban_time = get_current_time_str()
-                        user_mention = f'<a href="tg://user?id={info["user_id"]}">{info.get("user_name", "User")}</a>'
+                        user_name = info.get("user_name", "User")
                         followers = info.get("followers", "N/A")
                         following = info.get("following", "N/A")
 
                         caption = (
-                            f"🚫 <b>Instagram Account Banned / Terminated!</b>\n\n"
-                            f"👤 <b>Target:</b> <b>@{username}</b>\n"
-                            f"👥 <b>Previous Stats:</b> Followers <code>{followers}</code> | Following <code>{following}</code>\n"
-                            f"⏱ <b>Time Taken to Ban:</b> {time_str}\n"
-                            f"📅 <b>Requested Date:</b> {req_date}\n"
-                            f"🕒 <b>Requested Time:</b> {req_time}\n"
-                            f"❌ <b>Banned at:</b> {ban_time}\n"
-                            f"👑 <b>Requested by:</b> {user_mention}\n\n"
-                            f"🛡️ <i>Developed by:</i> {DEVELOPER_TAG}"
+                            "🚫 Instagram Account Banned / Terminated!\n\n"
+                            f"👤 Target: @{username}\n"
+                            f"👥 Previous Stats: Followers {followers} | Following {following}\n"
+                            f"⏱ Time Taken to Ban: {time_str}\n"
+                            f"📅 Requested Date: {req_date}\n"
+                            f"🕒 Requested Time: {req_time}\n"
+                            f"❌ Banned at: {ban_time}\n"
+                            f"👑 Requested by: {user_name}\n\n"
+                            f"🛡️ Developed by: {DEVELOPER_TAG}"
                         )
 
                         try:
@@ -280,34 +291,27 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
-def extract_username(message):
-    args = message.text.split()
-    if len(args) < 2:
-        return None
-    return args[1].strip().replace("@", "").lower()
-
 # ----------------- COMMAND HANDLERS -----------------
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     _verify_integrity()
-    user_id = message.from_user.id
     user_name = message.from_user.first_name or "User"
-    user_mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
+    user_id = message.from_user.id
 
     welcome_text = (
-        f"👋 <b>Welcome {user_mention}!</b>\n"
+        f"👋 Welcome {user_name}!\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>User Name:</b> {user_name}\n"
-        f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"👤 User Name: {user_name}\n"
+        f"🆔 User ID: {user_id}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>Available Commands:</b>\n"
-        f"• <code>/ub &lt;username&gt;</code> — Monitor account for recovery / unban\n"
-        f"• <code>/b &lt;username&gt;</code> — Monitor account for ban\n"
-        f"• <code>/status</code> — View active monitored accounts\n"
-        f"• <code>/owner</code> — Developer & Credits\n"
-        f"• <code>/help</code> — Bot instructions & guide\n"
+        f"🎯 Available Commands:\n"
+        f"• /ub <username> — Monitor account for recovery / unban\n"
+        f"• /b <username> — Monitor account for ban\n"
+        f"• /status — View active monitored accounts\n"
+        f"• /owner — Developer & Credits\n"
+        f"• /help — Bot instructions & guide\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👑 <b>Developer:</b> {DEVELOPER_TAG}"
+        f"👑 Developer: {DEVELOPER_TAG}"
     )
     bot.reply_to(message, welcome_text)
 
@@ -316,37 +320,38 @@ def handle_start(message):
 def handle_owner(message):
     _verify_integrity()
     owner_text = (
-        f"👑 <b>Bot Ownership & Credits</b>\n"
+        f"👑 Bot Ownership & Credits\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🛠 <b>Author / Developer:</b> {DEVELOPER_TAG}\n"
-        f"🌐 <b>Network:</b> {DEV_CHANNEL}\n"
-        f"⚡ <b>System:</b> Real-time Dual Instagram Monitor\n"
+        f"🛠 Author / Developer: {DEVELOPER_TAG}\n"
+        f"🌐 Network: {DEV_CHANNEL}\n"
+        f"⚡ System: Real-time Instagram Dual Monitor\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>All rights reserved. Code protected by integrity locks.</i>"
+        f"All rights reserved. Code protected by integrity locks."
     )
     bot.reply_to(message, owner_text)
 
-# ----------------- /ub COMMAND -----------------
+# ----------------- /ub COMMAND (UNBAN MONITOR) -----------------
 @bot.message_handler(commands=['ub', 'unban', 'm'])
 def handle_unban_request(message):
     username = extract_username(message)
-    user_mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.first_name or "User"}</a>'
+    user_name = message.from_user.first_name or "User"
     
     if not username:
-        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/ub username</code>\n<b>Example:</b> <code>/ub fvowl</code>")
+        bot.reply_to(message, "⚠️ Usage: /ub username\nExample: /ub ambient.rot")
         return
 
     if username in db.get("unban_monitors", {}):
-        bot.reply_to(message, f"ℹ️ <b>@{username}</b> is already in the unban monitoring list.")
+        bot.reply_to(message, f"ℹ️ @{username} is already in the unban monitoring list.")
         return
 
     status = get_instagram_details(username)
+    # If account is already active, deny monitoring request
     if status["active"] is True:
         bot.reply_to(
             message,
-            f"⚠️ <b>Request Denied:</b> <b>@{username}</b> is already <b>Active / Unbanned</b> on Instagram.\n\n"
-            f"👥 <b>Followers:</b> <code>{status['followers']}</code> | <b>Following:</b> <code>{status['following']}</code>\n"
-            f"👤 <b>Requested by:</b> {user_mention}"
+            f"⚠️ Request Denied: @{username} is already Active / Unbanned on Instagram.\n\n"
+            f"👥 Followers: {status['followers']} | Following: {status['following']}\n"
+            f"👤 Requested by: {user_name}"
         )
         return
 
@@ -356,7 +361,7 @@ def handle_unban_request(message):
     db.setdefault("unban_monitors", {})[username] = {
         "chat_id": message.chat.id,
         "user_id": message.from_user.id,
-        "user_name": message.from_user.first_name or "User",
+        "user_name": user_name,
         "start_time": time.time(),
         "requested_time": req_time,
         "requested_date": req_date
@@ -364,13 +369,13 @@ def handle_unban_request(message):
     save_db(db)
 
     caption = (
-        f"🔍 <b>Instagram Account Monitoring (Recovery)</b>\n\n"
-        f"👤 <b>Target:</b> <b>@{username}</b> added successfully.\n"
+        "🔍 Instagram Account Monitoring (Recovery)\n\n"
+        f"👤 Target: @{username} added successfully.\n"
         f"⚡ You will receive an instant alert with full stats as soon as the account is recovered.\n\n"
-        f"📅 <b>Date:</b> {req_date}\n"
-        f"🕒 <b>Requested at:</b> {req_time}\n"
-        f"👑 <b>Requested by:</b> {user_mention}\n\n"
-        f"🛡️ <i>Powered by:</i> {DEVELOPER_TAG}"
+        f"📅 Date: {req_date}\n"
+        f"🕒 Requested at: {req_time}\n"
+        f"👑 Requested by: {user_name}\n\n"
+        f"🛡️ Powered by: {DEVELOPER_TAG}"
     )
 
     try:
@@ -378,26 +383,27 @@ def handle_unban_request(message):
     except Exception:
         bot.send_message(chat_id=message.chat.id, text=caption, reply_to_message_id=message.message_id)
 
-# ----------------- /b COMMAND -----------------
+# ----------------- /b COMMAND (BAN MONITOR) -----------------
 @bot.message_handler(commands=['b', 'ban'])
 def handle_ban_request(message):
     username = extract_username(message)
-    user_mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.first_name or "User"}</a>'
+    user_name = message.from_user.first_name or "User"
     
     if not username:
-        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/b username</code>\n<b>Example:</b> <code>/b fvowl</code>")
+        bot.reply_to(message, "⚠️ Usage: /b username\nExample: /b ambient.rot")
         return
 
     if username in db.get("ban_monitors", {}):
-        bot.reply_to(message, f"ℹ️ <b>@{username}</b> is already in the ban monitoring list.")
+        bot.reply_to(message, f"ℹ️ @{username} is already in the ban monitoring list.")
         return
 
     status = get_instagram_details(username)
+    # If account is already banned / unavailable, deny ban request
     if status["active"] is False:
         bot.reply_to(
             message,
-            f"⚠️ <b>Request Denied:</b> <b>@{username}</b> is <b>Already Banned / Unavailable</b> on Instagram.\n\n"
-            f"👤 <b>Requested by:</b> {user_mention}"
+            f"⚠️ Request Denied: @{username} is already Banned / Unavailable on Instagram.\n\n"
+            f"👤 Requested by: {user_name}"
         )
         return
 
@@ -407,7 +413,7 @@ def handle_ban_request(message):
     db.setdefault("ban_monitors", {})[username] = {
         "chat_id": message.chat.id,
         "user_id": message.from_user.id,
-        "user_name": message.from_user.first_name or "User",
+        "user_name": user_name,
         "followers": status["followers"],
         "following": status["following"],
         "start_time": time.time(),
@@ -417,14 +423,14 @@ def handle_ban_request(message):
     save_db(db)
 
     caption = (
-        f"🎯 <b>Instagram Account Monitoring (Ban)</b>\n\n"
-        f"👤 <b>Target:</b> <b>@{username}</b> added successfully.\n"
-        f"👥 <b>Current Stats:</b> Followers <code>{status['followers']}</code> | Following <code>{status['following']}</code>\n"
+        "🎯 Instagram Account Monitoring (Ban)\n\n"
+        f"👤 Target: @{username} added successfully.\n"
+        f"👥 Current Stats: Followers {status['followers']} | Following {status['following']}\n"
         f"⚡ You will be notified the instant the account gets banned.\n\n"
-        f"📅 <b>Date:</b> {req_date}\n"
-        f"🕒 <b>Requested at:</b> {req_time}\n"
-        f"👑 <b>Requested by:</b> {user_mention}\n\n"
-        f"🛡️ <i>Powered by:</i> {DEVELOPER_TAG}"
+        f"📅 Date: {req_date}\n"
+        f"🕒 Requested at: {req_time}\n"
+        f"👑 Requested by: {user_name}\n\n"
+        f"🛡️ Powered by: {DEVELOPER_TAG}"
     )
 
     try:
@@ -442,44 +448,44 @@ def handle_status(message):
         bot.reply_to(message, "📭 No accounts are currently being monitored.")
         return
 
-    lines = ["📊 <b>Active Instagram Monitors:</b>\n━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["📊 Active Instagram Monitors:\n━━━━━━━━━━━━━━━━━━━━"]
     if unbans:
-        lines.append("\n🟢 <b>Awaiting Recovery / Unban:</b>")
+        lines.append("\n🟢 Awaiting Recovery / Unban:")
         for u, d in unbans.items():
             t = format_time_taken(time.time() - d["start_time"])
-            lines.append(f"• <b>@{u}</b> (Elapsed: <code>{t}</code>) — by {d.get('user_name')}")
+            lines.append(f"• @{u} (Elapsed: {t}) — by {d.get('user_name')}")
 
     if bans:
-        lines.append("\n🔴 <b>Awaiting Ban:</b>")
+        lines.append("\n🔴 Awaiting Ban:")
         for u, d in bans.items():
             t = format_time_taken(time.time() - d["start_time"])
             f_count = d.get("followers", "N/A")
-            lines.append(f"• <b>@{u}</b> (Followers: <code>{f_count}</code> | Elapsed: <code>{t}</code>) — by {d.get('user_name')}")
+            lines.append(f"• @{u} (Followers: {f_count} | Elapsed: {t}) — by {d.get('user_name')}")
 
-    lines.append(f"\n👑 <i>System:</i> {DEVELOPER_TAG}")
+    lines.append(f"\n👑 System: {DEVELOPER_TAG}")
     bot.reply_to(message, "\n".join(lines))
 
 # ----------------- /help COMMAND -----------------
 @bot.message_handler(commands=['help', 'h'])
 def handle_help(message):
     help_text = (
-        "⚙️ <b>Bot Help & Command Guide:</b>\n\n"
-        "• <code>/ub &lt;username&gt;</code> — Monitor account for recovery / unban\n"
-        "• <code>/b &lt;username&gt;</code> — Monitor account for ban\n"
-        "• <code>/status</code> — Check all active monitors\n"
-        "• <code>/owner</code> — Developer credentials & credits\n"
-        "• <code>/help</code> — Show this guide\n\n"
-        f"👑 <b>Author:</b> {DEVELOPER_TAG}"
+        "⚙️ Bot Help & Command Guide:\n\n"
+        "• /ub <username> — Monitor account for recovery / unban\n"
+        "• /b <username> — Monitor account for ban\n"
+        "• /status — Check all active monitors\n"
+        "• /owner — Developer credentials & credits\n"
+        "• /help — Show this guide\n\n"
+        f"👑 Author: {DEVELOPER_TAG}"
     )
     bot.reply_to(message, help_text)
 
-# ----------------- POLLING WITH AUTO-RECOVER -----------------
+# ----------------- POLLING WITH AUTO-RECONNECT -----------------
 def run_bot_polling():
     while True:
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=15, skip_pending=True)
         except Exception as e:
-            print(f"[POLLING RECOVER] Connection dropped: {e}. Reconnecting in 3 seconds...")
+            print(f"[POLLING RECOVER] Connection error: {e}. Reconnecting in 3s...")
             time.sleep(3)
 
 if __name__ == "__main__":

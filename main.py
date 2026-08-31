@@ -51,8 +51,7 @@ threading.Thread(target=run_server, daemon=True).start()
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
 INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA")
-MONGO_URI = "mongodb+srv://Vxcom:qqu17qb9fxCCZRGI@cluster0.jyskj1p.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-
+MONGO_URI = "mongodb://Vxcom:qqu17qb9fxCCZRGI@ac-dwxih6s-shard-00-00.jyskj1p.mongodb.net:27017,ac-dwxih6s-shard-00-01.jyskj1p.mongodb.net:27017,ac-dwxih6s-shard-00-02.jyskj1p.mongodb.net:27017/?ssl=true&replicaSet=atlas-1bjt1p-shard-0&authSource=admin&appName=Cluster0"
 
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
@@ -68,9 +67,10 @@ user_message_history = {}
 mongo_col = None
 if MONGO_URI:
     try:
-        client = MongoClient(MONGO_URI)
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         mongo_db = client["vxcom_monitor_db"]
         mongo_col = mongo_db["bot_data"]
+        client.admin.command('ping')
         print("✅ Connected to MongoDB Atlas successfully!", flush=True)
     except Exception as e:
         print(f"⚠️ MongoDB Connection Failed: {e}", flush=True)
@@ -127,14 +127,13 @@ def get_default_db_data():
             },
             "deny": {
                 "type": "animation",
-                "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyeThtZ2J6ZDFjMHc0MmZ5bTJ0ZXNqeTIxbjJpenc4bWJtcXdpcWJuZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/33OJOxsSqv6uPVOUcA/giphy.gif"
+                "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyZXA5MmJ6ZDFjMHc0MmZ5bTJ0ZXNqeTIxbjJpenc4bWJtcXdpcWJuZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/33OJOxsSqv6uPVOUcA/giphy.gif"
             }
         }
     }
 
 def load_db():
     default_data = get_default_db_data()
-
     if mongo_col is not None:
         try:
             doc = mongo_col.find_one({"_id": "global_config"})
@@ -1146,12 +1145,14 @@ def handle_unrecognized_input(message):
     if sent:
         auto_delete_after_delay(message.chat.id, sent.message_id, delay_seconds=300)
 
-# ----------------- POLLING -----------------
+# ----------------- POLLING ENGINE -----------------
 def run_bot_polling():
     while True:
         try:
+            bot.remove_webhook()
+            time.sleep(1)
             print("Starting TeleBot Polling...", flush=True)
-            bot.infinity_polling(timeout=20, long_polling_timeout=15, skip_pending=True)
+            bot.infinity_polling(timeout=20, long_polling_timeout=15, skip_pending=True, none_stop=True)
         except Exception as e:
             print(f"[RECONNECT] {e}. Reconnecting in 3s...", flush=True)
             time.sleep(3)

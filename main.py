@@ -51,7 +51,7 @@ threading.Thread(target=run_server, daemon=True).start()
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
 INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA")
-MONGO_URI = "mongodb://Vxcom:qqu17qb9fxCCZRGI@ac-dwxih6s-shard-00-00.jyskj1p.mongodb.net:27017,ac-dwxih6s-shard-00-01.jyskj1p.mongodb.net:27017,ac-dwxih6s-shard-00-02.jyskj1p.mongodb.net:27017/?ssl=true&replicaSet=atlas-1bjt1p-shard-0&authSource=admin&appName=Cluster0"
+MONGO_URI = "mongodb://Vxcom:qqu17qb9fxCCZRGI@ac-dwx1h6s-shard-00-00.jyskj1p.mongodb.net:27017,ac-dwx1h6s-shard-00-01.jyskj1p.mongodb.net:27017,ac-dwx1h6s-shard-00-02.jyskj1p.mongodb.net:27017/?ssl=true&replicaSet=atlas-1bjt1p-shard-0&authSource=admin&appName=Cluster0"
 
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]

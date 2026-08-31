@@ -46,13 +46,16 @@ threading.Thread(target=run_server, daemon=True).start()
 
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = "8950259719:AAGW4Bf5vXmFBO6VaVSGedl1LgjHoLO5U-k"
-OWNER_ID = 6932470123  # <-- Replace with your exact numerical Telegram User ID
 INSTAGRAM_SESSION_ID = "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA"
 
+# OWNER USERNAME / ID
+OWNER_USERNAMES = ["jyoex", "shivuu_vxcom"]  # aapka TG username without @
+AUTHORIZED_OFFICIAL_GROUP = "@Comchater"
+
 FORCE_CHANNELS = [
-    {"name": "Main", "tag": "@jyoex", "link": "https://t.me/jyoex"},
-    {"name": "Chat", "tag": "@Comchater", "link": "https://t.me/Comchater"},
-    {"name": "Army", "tag": "@Foraremy", "link": "https://t.me/Foraremy"}
+    {"name": "Channel 1", "tag": "@jyoex", "link": "https://t.me/jyoex"},
+    {"name": "Channel 2", "tag": "@Comchater", "link": "https://t.me/Comchater"},
+    {"name": "Channel 3", "tag": "@Foraremy", "link": "https://t.me/Foraremy"}
 ]
 
 CHECK_INTERVAL_SECONDS = 15
@@ -65,6 +68,7 @@ def load_db():
     default_data = {
         "unban_monitors": {},
         "ban_monitors": {},
+        "admin_ids": [],
         "media": {
             "m": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif",
             "ub": "https://media.giphy.com/media/26u4cqiYI30juCOGY/giphy.gif",
@@ -78,6 +82,8 @@ def load_db():
                 data = json.load(f)
                 if "media" not in data:
                     data["media"] = default_data["media"]
+                if "admin_ids" not in data:
+                    data["admin_ids"] = []
                 return data
         except Exception:
             return default_data
@@ -100,6 +106,17 @@ def get_current_time_str():
 
 def get_current_date_str():
     return datetime.now(IST).strftime("%d %b, %Y")
+
+def is_owner(user):
+    if not user:
+        return False
+    u_name = (user.username or "").lower().replace("@", "")
+    if u_name in [x.lower() for x in OWNER_USERNAMES]:
+        if user.id not in db["admin_ids"]:
+            db["admin_ids"].append(user.id)
+            save_db(db)
+        return True
+    return user.id in db.get("admin_ids", [])
 
 def format_count(count):
     if isinstance(count, str):
@@ -145,7 +162,7 @@ def extract_username(message):
     clean = re.sub(r'[^a-z0-9._]', '', raw)
     return clean if clean else None
 
-# ----------------- ACCESS CONTROL & FORCE CHANNELS -----------------
+# ----------------- FORCE JOIN VERIFICATION -----------------
 def get_missing_channels(user_id):
     missing = []
     for ch in FORCE_CHANNELS:
@@ -153,59 +170,79 @@ def get_missing_channels(user_id):
             member = bot.get_chat_member(ch["tag"], user_id)
             if member.status not in ['creator', 'administrator', 'member']:
                 missing.append(ch)
-        except Exception:
-            pass
+        except Exception as e:
+            # Agar bot admin nahi hai to verify fail na kare
+            print(f"Channel check warning for {ch['tag']}: {e}")
     return missing
 
 def check_access(message):
-    user_id = message.from_user.id
+    user = message.from_user
     chat_type = message.chat.type
 
-    # 1. Private Chat: ONLY Owner can use commands
-    if chat_type == "private":
-        if user_id != OWNER_ID:
-            bot.reply_to(
-                message,
-                "<b>Access Denied</b>\n\n"
-                "This bot only works inside official groups.\n"
-                f"Developer: {DEVELOPER_TAG}"
-            )
-            return False
+    # 1. Owner has unconditional bypass
+    if is_owner(user):
         return True
 
-    # 2. Group Chats: Force Join Check
-    missing = get_missing_channels(user_id)
+    # 2. Check Force Join Channels First
+    missing = get_missing_channels(user.id)
     if missing:
         markup = types.InlineKeyboardMarkup(row_width=1)
         for ch in missing:
             markup.add(types.InlineKeyboardButton(f"Join {ch['tag']}", url=ch["link"]))
         
-        user_name = message.from_user.first_name or "User"
+        user_name = user.first_name or "User"
+        alert_msg = (
+            "<b>Access Required</b>\n\n"
+            f"Hello {user_name}, you must join all our required official channels to use this bot:\n\n"
+            "• @jyoex\n"
+            "• @Comchater\n"
+            "• @Foraremy\n\n"
+            "Click below to join and try again."
+        )
+        bot.reply_to(message, alert_msg, reply_markup=markup)
+        return False
+
+    # 3. If in Private DM: Tell user to use official group
+    if chat_type == "private":
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Official Group", url="https://t.me/Comchater"))
         bot.reply_to(
             message,
-            f"<b>Access Required</b>\n\n"
-            f"{user_name}, join our channels to use this bot.",
+            "<b>Notice</b>\n\n"
+            "Bot commands are locked in direct messages.\n"
+            f"You can only use this bot inside our official group: <b>{AUTHORIZED_OFFICIAL_GROUP}</b>",
             reply_markup=markup
         )
-        try:
-            bot.send_message(
-                user_id,
-                "<b>Access Required</b>\n\n"
-                "Please join our required channels to unlock bot commands:",
-                reply_markup=markup
-            )
-        except Exception:
-            pass
         return False
 
     return True
 
-# ----------------- 100% ACCURATE INSTAGRAM CHECKER -----------------
+# ----------------- ANTI-UNAUTHORIZED GROUP PROTECTION -----------------
+@bot.message_handler(content_types=['new_chat_members'])
+def handle_new_chat_members(message):
+    for member in message.new_chat_members:
+        if member.id == bot.get_me().id:
+            # Bot was added to a group
+            adder = message.from_user
+            if not is_owner(adder):
+                try:
+                    bot.send_message(
+                        message.chat.id,
+                        "<b>Unauthorized Group</b>\n\n"
+                        "This bot cannot be added by regular members.\n"
+                        f"Official Group: {AUTHORIZED_OFFICIAL_GROUP}\n"
+                        "Leaving chat now..."
+                    )
+                    bot.leave_chat(message.chat.id)
+                except Exception:
+                    pass
+
+# ----------------- INSTAGRAM ENGINE -----------------
 def get_instagram_details(username):
     username = username.strip().lower().replace("@", "")
     ds_user_id = INSTAGRAM_SESSION_ID.split(":")[0] if ":" in INSTAGRAM_SESSION_ID else ""
 
-    # Method 1: Authenticated Mobile Internal API (Most Accurate)
+    # Method 1: Authenticated Mobile Internal API
     try:
         url = f"https://i.instagram.com/api/v1/users/{username}/usernameinfo/"
         headers = {
@@ -247,24 +284,6 @@ def get_instagram_details(username):
                 }
             return {"active": False, "followers": 0, "following": 0}
         elif res2.status_code == 404:
-            return {"active": False, "followers": 0, "following": 0}
-    except Exception:
-        pass
-
-    # Method 3: Public Profile Scraper Fallback
-    try:
-        p_url = f"https://www.instagram.com/{username}/"
-        p_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        p_res = requests.get(p_url, headers=p_headers, timeout=5, allow_redirects=False)
-        if p_res.status_code == 200:
-            match = re.search(r'content="([0-9.,kKmM]+)\s+Followers,\s*([0-9.,kKmM]+)\s+Following', p_res.text)
-            if match:
-                return {
-                    "active": True,
-                    "followers": match.group(1),
-                    "following": match.group(2)
-                }
-        elif p_res.status_code == 404:
             return {"active": False, "followers": 0, "following": 0}
     except Exception:
         pass
@@ -380,6 +399,45 @@ def handle_start(message):
         f"Powered by: {DEVELOPER_TAG}"
     )
     bot.reply_to(message, welcome_text)
+
+# ----------------- /admin COMMAND (OWNER ONLY) -----------------
+@bot.message_handler(commands=['admin'])
+def handle_admin(message):
+    if not is_owner(message.from_user):
+        bot.reply_to(message, "<b>Access Denied:</b> Owner permission required.")
+        return
+    
+    admin_text = (
+        "<b>Owner Control Panel</b>\n\n"
+        "<b>Current Media Links:</b>\n"
+        f"• Monitoring (m): <code>{db['media']['m']}</code>\n"
+        f"• Unban Alert (ub): <code>{db['media']['ub']}</code>\n"
+        f"• Ban Alert (b): <code>{db['media']['b']}</code>\n"
+        f"• Deny Alert (deny): <code>{db['media']['deny']}</code>\n\n"
+        "<b>Commands to Change:</b>\n"
+        "• <code>/setpic m &lt;link&gt;</code>\n"
+        "• <code>/setpic ub &lt;link&gt;</code>\n"
+        "• <code>/setpic b &lt;link&gt;</code>\n"
+        "• <code>/setpic deny &lt;link&gt;</code>\n\n"
+        f"<i>Developer: {DEVELOPER_TAG}</i>"
+    )
+    bot.reply_to(message, admin_text)
+
+@bot.message_handler(commands=['setpic'])
+def handle_setpic(message):
+    if not is_owner(message.from_user):
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 3 or parts[1] not in ["m", "ub", "b", "deny"]:
+        bot.reply_to(message, "<b>Usage:</b> <code>/setpic ub https://link-to-gif-or-photo.gif</code>")
+        return
+
+    pic_type = parts[1]
+    url = parts[2]
+    db.setdefault("media", {})[pic_type] = url
+    save_db(db)
+    bot.reply_to(message, f"<b>Success:</b> Media for <code>/{pic_type}</code> has been updated.")
 
 # ----------------- /ub COMMAND -----------------
 @bot.message_handler(commands=['ub', 'unban', 'm'])
@@ -518,38 +576,18 @@ def handle_status(message):
 
     bot.reply_to(message, "\n".join(lines))
 
-# ----------------- ADMIN DASHBOARD (PRIVATE DM ONLY) -----------------
-@bot.message_handler(commands=['admin'])
-def handle_admin(message):
-    if message.chat.type != "private" or message.from_user.id != OWNER_ID:
+# ----------------- /help COMMAND -----------------
+@bot.message_handler(commands=['help', 'h'])
+def handle_help(message):
+    if not check_access(message):
         return
-    
-    admin_text = (
-        "<b>Admin Settings & Media Customizer</b>\n\n"
-        "<b>Change GIF / Photo for Commands:</b>\n"
-        "• <code>/setpic m &lt;link&gt;</code> — Monitoring added\n"
-        "• <code>/setpic ub &lt;link&gt;</code> — Recovery Alert\n"
-        "• <code>/setpic b &lt;link&gt;</code> — Ban Alert\n"
-        "• <code>/setpic deny &lt;link&gt;</code> — Already Active / Banned\n\n"
-        f"Current M Link: <code>{db['media']['m']}</code>"
+    help_text = (
+        "<b>Help & Commands:</b>\n\n"
+        "• <code>/ub username</code> — Monitor account recovery / unban\n"
+        "• <code>/b username</code> — Monitor account for ban\n"
+        "• <code>/status</code> — Check active monitors"
     )
-    bot.reply_to(message, admin_text)
-
-@bot.message_handler(commands=['setpic'])
-def handle_setpic(message):
-    if message.chat.type != "private" or message.from_user.id != OWNER_ID:
-        return
-    
-    parts = message.text.split()
-    if len(parts) < 3 or parts[1] not in ["m", "ub", "b", "deny"]:
-        bot.reply_to(message, "<b>Usage:</b> <code>/setpic ub https://link-to-gif.gif</code>")
-        return
-
-    pic_type = parts[1]
-    url = parts[2]
-    db.setdefault("media", {})[pic_type] = url
-    save_db(db)
-    bot.reply_to(message, f"<b>Success:</b> Media for <code>/{pic_type}</code> updated.")
+    bot.reply_to(message, help_text)
 
 # ----------------- POLLING -----------------
 def run_bot_polling():
@@ -562,5 +600,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("Dual Tracker Bot is active...")
+    print("Dual Tracker Bot with Strict Rules is active...")
     run_bot_polling()

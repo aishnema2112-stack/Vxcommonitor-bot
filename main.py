@@ -46,9 +46,11 @@ threading.Thread(target=run_server, daemon=True).start()
 # -------------------------------------------------------------
 
 # ----------------- CONFIGURATION -----------------
-BOT_TOKEN = "8950259719:AAGW4Bf5vXmFBO6VaVSGedl1LgjHoLO5U-k"
+BOT_TOKEN = "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU"
 INSTAGRAM_SESSION_ID = "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA"
-CLAIM_SECRET_PASSWORD = "mansour$vx"
+
+# ALLOWED CLAIM PASSWORDS
+ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
 CHECK_INTERVAL_SECONDS = 15
@@ -56,7 +58,7 @@ DB_FILE = "dual_tracker_db.json"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
-# In-memory states for multi-step admin flows
+# In-memory states for admin actions
 admin_state = {}
 
 # ----------------- DATABASE -----------------
@@ -80,11 +82,26 @@ def load_db():
             {"id": "c3", "name": "Foraremy", "tag": "@Foraremy", "link": "https://t.me/Foraremy", "color": "📢"}
         ],
         "media": {
-            "ub_req": {"type": "animation", "id": "https://media.giphy.com/media/xT9IgzoKnwFNmISR8I/giphy.gif"},
-            "ub_done": {"type": "animation", "id": "https://media.giphy.com/media/l41lI4bYmcsPJX9Go/giphy.gif"},
-            "b_req": {"type": "animation", "id": "https://media.giphy.com/media/xT9IgzoKnwFNmISR8I/giphy.gif"},
-            "b_done": {"type": "animation", "id": "https://media.giphy.com/media/3o84sw9CmwYJAnRRkI/giphy.gif"},
-            "deny": {"type": "animation", "id": "https://media.giphy.com/media/13d2jHlSlxklVe/giphy.gif"}
+            "ub_req": {
+                "type": "animation",
+                "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyZTcyYTVjaGc4NmY1emdwNWo3bHZjdHdjejc5ZTV6a2dtdmZ0cDVpdyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/FB5EOw0CaaQM0/giphy.gif"
+            },
+            "ub_done": {
+                "type": "animation",
+                "id": "https://media3.giphy.com/media/v1.Y2lkPTZjMDliOTUycDhtZ2lpcTJqcGoxam9rM2k3cDd1Z2Vpc2hteWdxZzR5NHF1amFkYiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/bdrGSR9rPkvEoRp8dw/giphy.gif"
+            },
+            "b_req": {
+                "type": "animation",
+                "id": "https://media2.giphy.com/media/v1.Y2lkPTZjMDliOTUya2FmcnV4OWd5azI1NzhnMzZicG5mOHhrZmFzNHFlMW5zaTJuYXFkNiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/HyOOyynWxMxig/giphy.gif"
+            },
+            "b_done": {
+                "type": "animation",
+                "id": "https://media1.giphy.com/media/v1.Y2lkPTZjMDliOTUydjNzdzh1NjBhcHp0bTdvNzJmcmdjZjhseHE4c3Nqd21waHR2dGd5byZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/XOiECsEvO6PfVkEJ3P/giphy.gif"
+            },
+            "deny": {
+                "type": "animation",
+                "id": "https://media4.giphy.com/media/v1.Y2lkPTZjMDliOTUyZ3lzZWNhbXdwOXhjbTZpazl3Ym1wemI5NWFkeXo1aHhzaG4yc3M4NCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/dUszCAloOBDlm/giphy.gif"
+            }
         }
     }
     if os.path.exists(DB_FILE):
@@ -237,7 +254,7 @@ def send_custom_media(chat_id, key, caption, reply_to=None):
         else:
             return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to)
     except Exception as e:
-        print(f"Media send fallback: {e}")
+        print(f"Media fallback: {e}")
         return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to)
 
 # ----------------- STRICT FORCE JOIN VERIFICATION -----------------
@@ -265,11 +282,11 @@ def check_access(message):
     chat = message.chat
     register_user(user, chat.id)
 
-    # 1. Admin/Owner always has full bypass
+    # 1. Admin/Owner always has bypass
     if is_admin_or_owner(user.id):
         return True
 
-    # 2. STRICT FORCE JOIN CHECK (ALWAYS FIRST IN BOTH DM & GROUP)
+    # 2. STRICT FORCE JOIN CHECK FIRST
     missing = get_missing_channels(user.id)
     if missing:
         mention = get_user_mention(user.id, user.first_name)
@@ -283,7 +300,7 @@ def check_access(message):
         bot.reply_to(message, text, reply_markup=build_force_join_markup())
         return False
 
-    # 3. Maintenance Check
+    # 3. Maintenance Mode Check
     if db.get("settings", {}).get("maintenance", False):
         maintenance_msg = (
             "🛠 <b>System Maintenance Notice</b>\n\n"
@@ -294,7 +311,7 @@ def check_access(message):
         bot.reply_to(message, maintenance_msg)
         return False
 
-    # 4. DM Usage Redirect (Only after force join is verified)
+    # 4. DM Usage Notice (Only after force join verified)
     if chat.type == "private":
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Official Group", url="https://t.me/Comchater"))
@@ -677,7 +694,7 @@ def handle_admin_callbacks(call):
         )
         return
 
-    # 5.2 View All Media
+    # 5.2 View All Media Previews
     if data == "view_all_media":
         bot.answer_callback_query(call.id, "Sending previews...")
         stages = [
@@ -745,7 +762,7 @@ def handle_admin_callbacks(call):
         )
         return
 
-    # 6.3 Handle Color Selection Callback (Fixed parsing)
+    # 6.3 Handle Color Selection Callback
     if data.startswith("col_"):
         parts = data.split("_")
         cid = parts[1]
@@ -762,7 +779,6 @@ def handle_admin_callbacks(call):
                 break
         save_db(db)
         bot.answer_callback_query(call.id, f"Color updated to {chosen_symbol}", show_alert=True)
-        # Refresh menu
         markup = types.InlineKeyboardMarkup(row_width=1)
         for ch in db.get("channels", []):
             markup.add(
@@ -814,10 +830,11 @@ def process_admin_inputs(message):
     user_id = message.from_user.id
     state = admin_state.get(user_id)
 
-    # 0. Handle Claim Password verification
+    # 0. Handle Claim Password verification (Supports multiple passwords)
     if state == "waiting_claim_password":
         admin_state.pop(user_id, None)
-        if message.text and message.text.strip() == CLAIM_SECRET_PASSWORD:
+        entered_pass = message.text.strip() if message.text else ""
+        if entered_pass in ALLOWED_CLAIM_PASSWORDS:
             if user_id not in db["admins"]:
                 db.setdefault("admins", []).append(user_id)
                 save_db(db)

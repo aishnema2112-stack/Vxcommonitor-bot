@@ -51,7 +51,8 @@ threading.Thread(target=run_server, daemon=True).start()
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
 INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA")
-MONGO_URI = os.environ.get("MONGO_URI")
+MONGO_URI = "mongodb+srv://Vxcom:qqu17qb9fxCCZRGI@cluster0.jyskj1p.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
 
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]

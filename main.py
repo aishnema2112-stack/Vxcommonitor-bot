@@ -5,12 +5,12 @@ import json
 import re
 import threading
 import io
+import base64
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 from telebot import types
 from datetime import datetime, timezone, timedelta
-from pymongo import MongoClient
 
 # Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)
@@ -51,7 +51,9 @@ threading.Thread(target=run_server, daemon=True).start()
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
 INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA")
-MONGO_URI = "mongodb://Vxcom:qqu17qb9fxCCZRGI@ac-dwx1h6s-shard-00-00.jyskj1p.mongodb.net:27017,ac-dwx1h6s-shard-00-01.jyskj1p.mongodb.net:27017,ac-dwx1h6s-shard-00-02.jyskj1p.mongodb.net:27017/vxcom_monitor_db?ssl=true&replicaSet=atlas-1bjt1p-shard-0&authSource=admin&appName=Cluster0"
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
@@ -63,19 +65,66 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=Tru
 admin_state = {}
 user_message_history = {}
 
-# ----------------- MONGODB & FALLBACK ENGINE -----------------
-mongo_col = None
-if MONGO_URI:
+# ----------------- GITHUB DATABASE SYNC ENGINE -----------------
+def load_from_github():
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return False
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        mongo_db = client["vxcom_monitor_db"]
-        mongo_col = mongo_db["bot_data"]
-        client.admin.command('ping')
-        print("✅ Connected to MongoDB Atlas successfully!", flush=True)
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        res = requests.get(api_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            file_data = res.json()
+            if "content" in file_data:
+                decoded = base64.b64decode(file_data["content"])
+                with open(DB_FILE, "wb") as f:
+                    f.write(decoded)
+                print("✅ Successfully synced database from GitHub!", flush=True)
+                return True
     except Exception as e:
-        print(f"⚠️ MongoDB Connection Failed: {e}", flush=True)
-        mongo_col = None
+        print(f"GitHub Load Error: {e}", flush=True)
+    return False
 
+def sync_to_github():
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return
+    try:
+        if not os.path.exists(DB_FILE):
+            return
+        with open(DB_FILE, "rb") as f:
+            content_bytes = f.read()
+        content_encoded = base64.b64encode(content_bytes).decode("utf-8")
+
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        
+        get_res = requests.get(api_url, headers=headers, timeout=10)
+        sha = None
+        if get_res.status_code == 200:
+            sha = get_res.json().get("sha")
+
+        data_payload = {
+            "message": "Auto-update database [skip ci]",
+            "content": content_encoded,
+            "branch": "main"
+        }
+        if sha:
+            data_payload["sha"] = sha
+
+        put_res = requests.put(api_url, headers=headers, json=data_payload, timeout=10)
+        if put_res.status_code not in [200, 201]:
+            data_payload["branch"] = "master"
+            requests.put(api_url, headers=headers, json=data_payload, timeout=10)
+    except Exception as e:
+        print(f"GitHub Sync Error: {e}", flush=True)
+
+# ----------------- DATABASE LOADER & SAVER -----------------
 def get_default_db_data():
     return {
         "_id": "global_config",
@@ -134,20 +183,8 @@ def get_default_db_data():
 
 def load_db():
     default_data = get_default_db_data()
-    if mongo_col is not None:
-        try:
-            doc = mongo_col.find_one({"_id": "global_config"})
-            if doc:
-                for k, v in default_data.items():
-                    if k not in doc:
-                        doc[k] = v
-                return doc
-            else:
-                mongo_col.insert_one(default_data)
-                return default_data
-        except Exception as e:
-            print(f"MongoDB Fetch error: {e}", flush=True)
-
+    load_from_github()
+    
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
@@ -161,17 +198,10 @@ def load_db():
     return default_data
 
 def save_db(data):
-    if mongo_col is not None:
-        try:
-            clean_data = dict(data)
-            clean_data["_id"] = "global_config"
-            mongo_col.replace_one({"_id": "global_config"}, clean_data, upsert=True)
-        except Exception as e:
-            print(f"MongoDB Save error: {e}", flush=True)
-
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, default=str)
+        sync_to_github()
     except Exception as e:
         print(f"Local DB Error: {e}", flush=True)
 
@@ -361,7 +391,6 @@ def check_access(message):
     if is_admin_or_owner(user.id):
         return True
 
-    # 1. Force Join Check
     missing = get_missing_channels(user.id)
     if missing:
         mention = get_user_mention(user.id, user.first_name)
@@ -373,7 +402,6 @@ def check_access(message):
         send_custom_media(chat.id, "force_join", text, reply_to=message.message_id, reply_markup=build_force_join_markup())
         return False
 
-    # 2. Maintenance Mode
     if db.get("settings", {}).get("maintenance", False):
         maintenance_msg = (
             "🛠 <b>System Maintenance Notice</b>\n\n"
@@ -383,7 +411,6 @@ def check_access(message):
         bot.reply_to(message, maintenance_msg, protect_content=(chat.id > 0))
         return False
 
-    # 3. DM Notice
     if chat.type == "private":
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Comchater", url="https://t.me/Comchater"))
@@ -441,7 +468,6 @@ def get_instagram_details(username):
     username = username.strip().lower().replace("@", "")
     ds_user_id = INSTAGRAM_SESSION_ID.split(":")[0] if ":" in INSTAGRAM_SESSION_ID else ""
 
-    # Gateway 1: Web Profile Gateway
     try:
         web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
         headers = {
@@ -465,7 +491,6 @@ def get_instagram_details(username):
     except Exception:
         pass
 
-    # Gateway 2: oEmbed Public Fallback
     try:
         oembed_url = f"https://api.instagram.com/oembed/?url=https://www.instagram.com/{username}/"
         res_o = requests.get(oembed_url, timeout=5)
@@ -476,7 +501,6 @@ def get_instagram_details(username):
     except Exception:
         pass
 
-    # Gateway 3: Mobile App Internal API
     try:
         app_url = f"https://i.instagram.com/api/v1/users/{username}/usernameinfo/"
         app_headers = {
@@ -506,7 +530,6 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # 1. Recovery Check (/ub)
             unban_list = list(db.get("unban_monitors", {}).items())
             for username, info in unban_list:
                 status = get_instagram_details(username)
@@ -538,7 +561,6 @@ def monitor_loop():
 
                 time.sleep(2)
 
-            # 2. Ban Check (/b)
             ban_list = list(db.get("ban_monitors", {}).items())
             for username, info in ban_list:
                 status = get_instagram_details(username)
@@ -598,7 +620,6 @@ def get_admin_panel_markup():
     )
     return markup
 
-# ----------------- PASSWORD PROTECTED /claim -----------------
 @bot.message_handler(commands=['claim'])
 def handle_claim(message):
     if message.chat.type != "private":
@@ -625,7 +646,6 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-# ----------------- CALLBACK HANDLERS FOR ADMIN -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_"))
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
@@ -642,7 +662,6 @@ def handle_admin_callbacks(call):
             pass
         return
 
-    # Mailing Target Selector
     if data == "admin_mailing_select":
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
@@ -660,7 +679,6 @@ def handle_admin_callbacks(call):
         )
         return
 
-    # Handle Specific Mailing Target Selection
     if data.startswith("mail_target_"):
         target_mode = data.replace("mail_target_", "")
         admin_state[user_id] = f"waiting_broadcast_{target_mode}"
@@ -676,14 +694,13 @@ def handle_admin_callbacks(call):
         )
         return
 
-    # Statistics
     if data == "admin_stats":
         total_users = len(db.get("users", {}))
         total_groups = len(db.get("groups", []))
         ub_count = len(db.get("unban_monitors", {}))
         b_count = len(db.get("ban_monitors", {}))
         total_tracked = db.get("stats", {}).get("total_monitored", 0) + ub_count + b_count
-        db_mode = "MongoDB Atlas ☁️" if mongo_col is not None else "Local JSON 📁"
+        db_mode = "GitHub JSON Auto-Sync 📁🔄"
 
         stats_text = (
             "📊 <b>Bot Real-time Analytics Dashboard</b>\n\n"
@@ -835,7 +852,6 @@ def handle_cancel_action(call):
     bot.answer_callback_query(call.id, "Action cancelled.")
     bot.edit_message_text("🔧 <b>Administrator Control Panel</b>\n\nSelect an action below:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
 
-# ----------------- ADMIN INPUT LISTENERS -----------------
 @bot.message_handler(content_types=['text', 'photo', 'video', 'animation', 'document', 'audio', 'voice', 'sticker'], func=lambda msg: msg.from_user.id in admin_state)
 def process_admin_inputs(message):
     user_id = message.from_user.id
@@ -858,7 +874,6 @@ def process_admin_inputs(message):
         bot.reply_to(message, "❌ <b>Action Cancelled.</b>", reply_markup=get_admin_panel_markup())
         return
 
-    # Broadcast Engine with 3 Selected Targets
     if state and state.startswith("waiting_broadcast_"):
         target_mode = state.replace("waiting_broadcast_", "")
         admin_state.pop(user_id, None)
@@ -933,7 +948,6 @@ def process_admin_inputs(message):
         else:
             bot.reply_to(message, "❌ Invalid media type. Please send Photo, GIF, or Video.")
 
-# ----------------- REGULAR COMMANDS -----------------
 @bot.message_handler(commands=['start', 'help', 'h'])
 def handle_start_help(message):
     if not check_access(message):
@@ -951,7 +965,6 @@ def handle_start_help(message):
     )
     bot.reply_to(message, welcome_text)
 
-# ----------------- /ub COMMAND -----------------
 @bot.message_handler(commands=['ub', 'unban'])
 def handle_unban_request(message):
     if not check_access(message):
@@ -1011,7 +1024,6 @@ def handle_unban_request(message):
 
     send_custom_media(message.chat.id, "ub_req", caption, reply_to=message.message_id)
 
-# ----------------- /b COMMAND -----------------
 @bot.message_handler(commands=['b', 'ban'])
 def handle_ban_request(message):
     if not check_access(message):
@@ -1073,7 +1085,6 @@ def handle_ban_request(message):
 
     send_custom_media(message.chat.id, "b_req", caption, reply_to=message.message_id)
 
-# ----------------- /status COMMAND -----------------
 @bot.message_handler(commands=['status', 's'])
 def handle_status(message):
     if not check_access(message):
@@ -1106,7 +1117,6 @@ def handle_status(message):
 
     bot.reply_to(message, "\n".join(lines))
 
-# ----------------- UNKNOWN COMMAND / RANDOM TEXT (PAID SUBSCRIPTION ALERT) -----------------
 @bot.message_handler(func=lambda msg: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
 def handle_unrecognized_input(message):
     user = message.from_user
@@ -1145,7 +1155,6 @@ def handle_unrecognized_input(message):
     if sent:
         auto_delete_after_delay(message.chat.id, sent.message_id, delay_seconds=300)
 
-# ----------------- POLLING ENGINE -----------------
 def run_bot_polling():
     while True:
         try:

@@ -4,6 +4,7 @@ import time
 import json
 import re
 import threading
+import io
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
@@ -61,8 +62,8 @@ DB_FILE = "dual_tracker_db.json"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# Temporary state for Admin Media upload
-admin_upload_state = {}
+# In-memory transient state for admin flows
+admin_state = {}
 
 # ----------------- DATABASE -----------------
 def load_db():
@@ -70,6 +71,15 @@ def load_db():
         "unban_monitors": {},
         "ban_monitors": {},
         "admins": [],
+        "users": {},
+        "groups": [],
+        "settings": {
+            "maintenance": False,
+            "new_user_notify": True
+        },
+        "stats": {
+            "total_monitored": 0
+        },
         "media": {
             "m": {"type": "animation", "id": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif"},
             "ub": {"type": "animation", "id": "https://media.giphy.com/media/26u4cqiYI30juCOGY/giphy.gif"},
@@ -81,10 +91,9 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if "media" not in data:
-                    data["media"] = default_data["media"]
-                if "admins" not in data:
-                    data["admins"] = []
+                for k, v in default_data.items():
+                    if k not in data:
+                        data[k] = v
                 return data
         except Exception:
             return default_data
@@ -108,6 +117,9 @@ def get_current_time_str():
 def get_current_date_str():
     return datetime.now(IST).strftime("%d %b, %Y")
 
+def get_full_timestamp():
+    return datetime.now(IST).strftime("%d-%m-%Y %I:%M %p")
+
 def get_user_mention(user_id, first_name):
     clean_name = first_name.replace("<", "").replace(">", "") if first_name else "User"
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
@@ -121,6 +133,47 @@ def is_admin_or_owner(user_id, username=None):
             save_db(db)
         return True
     return False
+
+def register_user(user, chat_id=None):
+    user_id = str(user.id)
+    is_new = user_id not in db.get("users", {})
+
+    if is_new:
+        db.setdefault("users", {})[user_id] = {
+            "id": user.id,
+            "name": user.first_name or "Unknown",
+            "username": f"@{user.username}" if user.username else "No Username",
+            "joined_at": get_full_timestamp(),
+            "req_count": 0
+        }
+        save_db(db)
+
+        # Send New User Alert if enabled
+        if db.get("settings", {}).get("new_user_notify", True):
+            mention = get_user_mention(user.id, user.first_name)
+            u_tag = f'<a href="tg://user?id={user.id}">@{user.username}</a>' if user.username else "<i>None</i>"
+            alert_text = (
+                "🆕 <b>New User Alert:</b>\n\n"
+                f"👤 <b>Name:</b> {mention}\n"
+                f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+                f"🔗 <b>Username:</b> {u_tag}\n"
+                f"📅 <b>Date & Time:</b> <code>{get_full_timestamp()}</code>"
+            )
+            for adm in db.get("admins", []):
+                try:
+                    bot.send_message(adm, alert_text)
+                except Exception:
+                    pass
+    else:
+        # Update user name & username
+        db["users"][user_id]["name"] = user.first_name or "Unknown"
+        db["users"][user_id]["username"] = f"@{user.username}" if user.username else "No Username"
+        save_db(db)
+
+    if chat_id and chat_id not in db.get("groups", []):
+        if chat_id < 0:
+            db.setdefault("groups", []).append(chat_id)
+            save_db(db)
 
 def format_count(count):
     if isinstance(count, str):
@@ -189,7 +242,7 @@ def send_custom_media(chat_id, key, caption, reply_to=None):
         else:
             return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to)
     except Exception as e:
-        print(f"Media send failed, falling to text fallback: {e}")
+        print(f"Media send fallback to text: {e}")
         return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to)
 
 # ----------------- FORCE JOIN VERIFICATION -----------------
@@ -214,10 +267,24 @@ def build_force_join_markup():
 def check_access(message):
     user = message.from_user
     chat = message.chat
+    register_user(user, chat.id)
 
+    # 1. Admin/Owner always has full bypass
     if is_admin_or_owner(user.id, user.username):
         return True
 
+    # 2. Maintenance Check (Clean English Notice)
+    if db.get("settings", {}).get("maintenance", False):
+        maintenance_msg = (
+            "🛠 <b>System Maintenance Notice</b>\n\n"
+            "Our servers are currently undergoing scheduled upgrades and optimization.\n"
+            "All monitoring requests are temporarily paused.\n\n"
+            "<i>We will be back online shortly. Thank you for your patience!</i>"
+        )
+        bot.reply_to(message, maintenance_msg)
+        return False
+
+    # 3. Force Join Channels Check
     missing = get_missing_channels(user.id)
     if missing:
         mention = get_user_mention(user.id, user.first_name)
@@ -230,6 +297,7 @@ def check_access(message):
         bot.reply_to(message, text, reply_markup=build_force_join_markup())
         return False
 
+    # 4. DM Usage Block for Non-Admins
     if chat.type == "private":
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Official Group", url="https://t.me/Comchater"))
@@ -416,7 +484,23 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
-# ----------------- ADMIN INTERACTIVE PANEL -----------------
+# ----------------- ADMIN DASHBOARD & FLOWS -----------------
+def get_admin_panel_markup():
+    m_status = "🟢 ON" if db.get("settings", {}).get("maintenance", False) else "⚪ OFF"
+    n_status = "🔔 ON" if db.get("settings", {}).get("new_user_notify", True) else "🔕 OFF"
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("📬 Mailing", callback_data="admin_mailing"),
+        types.InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"),
+        types.InlineKeyboardButton(f"🛠 Maintenance ({m_status})", callback_data="toggle_maintenance"),
+        types.InlineKeyboardButton(f"👤 New User ({n_status})", callback_data="toggle_notify"),
+        types.InlineKeyboardButton("🖼 Change Media", callback_data="admin_media"),
+        types.InlineKeyboardButton("👥 Manage Admins", callback_data="admin_manage"),
+        types.InlineKeyboardButton("❌ Close Panel", callback_data="admin_close")
+    )
+    return markup
+
 @bot.message_handler(commands=['claim'])
 def handle_claim(message):
     if message.chat.type != "private":
@@ -425,7 +509,7 @@ def handle_claim(message):
     if user_id not in db["admins"]:
         db["admins"].append(user_id)
         save_db(db)
-    bot.reply_to(message, "👑 <b>Success:</b> You are now registered as Owner/Admin! Send <code>/admin</code> to open settings.")
+    bot.reply_to(message, "👑 <b>Success:</b> You are now registered as Owner/Admin! Send <code>/admin</code> to open panel.")
 
 @bot.message_handler(commands=['admin'])
 def handle_admin(message):
@@ -434,88 +518,250 @@ def handle_admin(message):
         bot.reply_to(message, "<b>Access Denied:</b> Send <code>/claim</code> in private DM first.")
         return
     
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("🔄 Change /m GIF", callback_data="set_m"),
-        types.InlineKeyboardButton("⚡ Change /ub GIF", callback_data="set_ub"),
-        types.InlineKeyboardButton("🚫 Change /b GIF", callback_data="set_b"),
-        types.InlineKeyboardButton("⚠️ Change Deny GIF", callback_data="set_deny"),
-        types.InlineKeyboardButton("👁️ View Media", callback_data="view_media"),
-        types.InlineKeyboardButton("❌ Close", callback_data="close_admin")
-    )
-
     admin_text = (
-        "⚙️ <b>Bot Media Settings Panel</b>\n\n"
-        "Click on any button below to change its GIF/Photo.\n"
-        "After clicking, just directly send the Photo, GIF, or Video in chat!"
+        "🔧 <b>Administrator Control Panel</b>\n\n"
+        "Welcome to the bot master management dashboard.\n"
+        "Select an action from the options below:"
     )
-    bot.reply_to(message, admin_text, reply_markup=markup)
+    bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
-def handle_set_media_prompt(call):
+# Callback Handlers for Admin Panel
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_"))
+def handle_admin_callbacks(call):
     user_id = call.from_user.id
     if not is_admin_or_owner(user_id, call.from_user.username):
+        bot.answer_callback_query(call.id, "Access Denied", show_alert=True)
         return
 
-    action = call.data.replace("set_", "")
-    admin_upload_state[user_id] = action
+    data = call.data
 
-    names = {"m": "Monitoring (/m)", "ub": "Unban Recovery (/ub)", "b": "Ban Alert (/b)", "deny": "Deny / Active Alert"}
-    
-    bot.answer_callback_query(call.id)
-    bot.send_message(
-        call.message.chat.id,
-        f"📸 <b>Send Media for {names.get(action, action)}</b>\n\n"
-        "Please send or forward the <b>Photo, GIF, or Video</b> right now in this chat."
+    if data == "admin_close":
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        return
+
+    # 1. Mailing
+    if data == "admin_mailing":
+        admin_state[user_id] = "waiting_broadcast"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
+        bot.edit_message_text(
+            "📬 <b>Mailing / Broadcast Mode</b>\n\n"
+            "Please send or <b>FORWARD</b> the message you want to broadcast.\n"
+            "You can forward from any channel or send Text, Photo, Video, GIF, or Documents.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        return
+
+    # 2. Statistics
+    if data == "admin_stats":
+        total_users = len(db.get("users", {}))
+        total_groups = len(db.get("groups", []))
+        ub_count = len(db.get("unban_monitors", {}))
+        b_count = len(db.get("ban_monitors", {}))
+        total_tracked = db.get("stats", {}).get("total_monitored", 0) + ub_count + b_count
+
+        stats_text = (
+            "📊 <b>Bot Real-time Analytics Dashboard</b>\n\n"
+            f"👤 <b>Total Unique Users:</b> <code>{total_users:,}</code>\n"
+            f"👥 <b>Active Registered Groups:</b> <code>{total_groups}</code>\n"
+            f"⚡ <b>Awaiting Unban (/ub):</b> <code>{ub_count}</code>\n"
+            f"🚫 <b>Awaiting Ban (/b):</b> <code>{b_count}</code>\n"
+            f"📈 <b>Total Accounts Tracked:</b> <code>{total_tracked:,}</code>\n"
+            f"🕒 <b>Server Status:</b> <code>Online 24/7 (Render)</code>"
+        )
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton("📑 View All Users List", callback_data="admin_user_list"),
+            types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
+        )
+        bot.edit_message_text(stats_text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        return
+
+    # 2.1 View All Users List
+    if data == "admin_user_list":
+        users = db.get("users", {})
+        if not users:
+            bot.answer_callback_query(call.id, "No users registered yet.", show_alert=True)
+            return
+
+        if len(users) <= 15:
+            lines = ["📋 <b>Registered Users List:</b>\n"]
+            for uid, u in users.items():
+                m = get_user_mention(u.get("id", uid), u.get("name", "User"))
+                lines.append(f"• {m} | <code>{uid}</code> | {u.get('username')} | Req: <code>{u.get('req_count', 0)}</code>")
+            
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="admin_stats"))
+            bot.edit_message_text("\n".join(lines), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        else:
+            # Generate detailed TXT file
+            out = io.StringIO()
+            out.write("==== REGISTERED USERS DATABASE ====\n\n")
+            for uid, u in users.items():
+                out.write(f"ID: {uid} | Name: {u.get('name')} | Username: {u.get('username')} | Requests: {u.get('req_count', 0)} | Joined: {u.get('joined_at')}\n")
+            
+            out.seek(0)
+            bio = io.BytesIO(out.getvalue().encode('utf-8'))
+            bio.name = f"users_database_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            bot.send_document(call.message.chat.id, bio, caption=f"📄 Total Registered Users: <b>{len(users)}</b>")
+            bot.answer_callback_query(call.id, "Database document generated.")
+        return
+
+    # 3. Toggle Maintenance
+    if data == "toggle_maintenance":
+        curr = db.setdefault("settings", {}).get("maintenance", False)
+        db["settings"]["maintenance"] = not curr
+        save_db(db)
+        state_str = "ENABLED (ON)" if not curr else "DISABLED (OFF)"
+        bot.answer_callback_query(call.id, f"Maintenance Mode {state_str}", show_alert=True)
+        bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
+        return
+
+    # 4. Toggle New User Notify
+    if data == "toggle_notify":
+        curr = db.setdefault("settings", {}).get("new_user_notify", True)
+        db["settings"]["new_user_notify"] = not curr
+        save_db(db)
+        state_str = "ENABLED (ON)" if not curr else "DISABLED (OFF)"
+        bot.answer_callback_query(call.id, f"New User Alert {state_str}", show_alert=True)
+        bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
+        return
+
+    # 5. Media Customizer Menu
+    if data == "admin_media":
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("🔄 /m Media", callback_data="set_m"),
+            types.InlineKeyboardButton("⚡ /ub Media", callback_data="set_ub"),
+            types.InlineKeyboardButton("🚫 /b Media", callback_data="set_b"),
+            types.InlineKeyboardButton("⚠️ Deny Media", callback_data="set_deny"),
+            types.InlineKeyboardButton("🔙 Back", callback_data="admin_back")
+        )
+        bot.edit_message_text("🖼 <b>Select Command to Change Media:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        return
+
+    # 6. Set Media Action
+    if data.startswith("set_"):
+        action = data.replace("set_", "")
+        admin_state[user_id] = f"waiting_media_{action}"
+        names = {"m": "Monitoring (/m)", "ub": "Unban Recovery (/ub)", "b": "Ban Alert (/b)", "deny": "Deny Alert"}
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
+        bot.edit_message_text(
+            f"📸 <b>Send Media for {names.get(action, action)}</b>\n\n"
+            "Please send or forward the <b>Photo, GIF, or Video</b> right now in this chat.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        return
+
+    # 7. Manage Admins
+    if data == "admin_manage":
+        adms = db.get("admins", [])
+        adm_lines = [f"• <code>{a}</code>" for a in adms]
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="admin_back"))
+        bot.edit_message_text(
+            "👥 <b>Authorized Admins:</b>\n\n" + "\n".join(adm_lines),
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        return
+
+    # Back to Main Panel
+    if data == "admin_back":
+        bot.edit_message_text(
+            "🔧 <b>Administrator Control Panel</b>\n\nSelect an action below:",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=get_admin_panel_markup()
+        )
+        return
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_action")
+def handle_cancel_action(call):
+    admin_state.pop(call.from_user.id, None)
+    bot.answer_callback_query(call.id, "Action cancelled.")
+    bot.edit_message_text(
+        "🔧 <b>Administrator Control Panel</b>\n\nSelect an action below:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=get_admin_panel_markup()
     )
 
-@bot.callback_query_handler(func=lambda call: call.data == "view_media")
-def handle_view_media(call):
-    bot.answer_callback_query(call.id)
-    for key, name in [("m", "Monitoring"), ("ub", "Unban"), ("b", "Ban"), ("deny", "Deny")]:
-        send_custom_media(call.message.chat.id, key, f"Current Media for <b>{name}</b>")
-        time.sleep(0.5)
-
-@bot.callback_query_handler(func=lambda call: call.data == "close_admin")
-def handle_close_admin(call):
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except Exception:
-        pass
-
-# Listener for Admin Media Uploads
-@bot.message_handler(content_types=['photo', 'animation', 'video', 'document'], func=lambda msg: msg.from_user.id in admin_upload_state)
-def process_admin_media_upload(message):
+# ----------------- ADMIN INPUT LISTENERS (MAILING & MEDIA) -----------------
+@bot.message_handler(content_types=['text', 'photo', 'video', 'animation', 'document', 'audio', 'voice', 'sticker'], func=lambda msg: msg.from_user.id in admin_state)
+def process_admin_inputs(message):
     user_id = message.from_user.id
-    action = admin_upload_state.get(user_id)
-    if not action:
+    state = admin_state.get(user_id)
+
+    if message.text and message.text.lower() in ["/cancel", "cancel"]:
+        admin_state.pop(user_id, None)
+        bot.reply_to(message, "❌ <b>Action Cancelled.</b>", reply_markup=get_admin_panel_markup())
         return
 
-    m_type = "photo"
-    file_id = ""
+    # A. Handle Broadcast Mailing (Direct Forward & Copy)
+    if state == "waiting_broadcast":
+        admin_state.pop(user_id, None)
+        status_msg = bot.reply_to(message, "⏳ <b>Broadcasting message to all users and groups...</b>")
 
-    if message.animation:
-        m_type = "animation"
-        file_id = message.animation.file_id
-    elif message.video:
-        m_type = "video"
-        file_id = message.video.file_id
-    elif message.photo:
+        targets = list(db.get("users", {}).keys()) + db.get("groups", [])
+        total = len(targets)
+        sent = 0
+        failed = 0
+
+        for target in targets:
+            try:
+                bot.copy_message(chat_id=target, from_chat_id=message.chat.id, message_id=message.message_id)
+                sent += 1
+                time.sleep(0.04)
+            except Exception:
+                failed += 1
+
+        report = (
+            "✅ <b>Mailing Broadcast Completed!</b>\n\n"
+            f"• <b>Total Targets:</b> <code>{total}</code>\n"
+            f"• <b>Delivered Successfully:</b> <code>{sent}</code>\n"
+            f"• <b>Failed / Blocked:</b> <code>{failed}</code>"
+        )
+        bot.edit_message_text(report, chat_id=message.chat.id, message_id=status_msg.message_id)
+        return
+
+    # B. Handle Media Update
+    if state and state.startswith("waiting_media_"):
+        action = state.replace("waiting_media_", "")
         m_type = "photo"
-        file_id = message.photo[-1].file_id
-    elif message.document:
-        m_type = "animation" if message.document.mime_type == "video/mp4" else "photo"
-        file_id = message.document.file_id
+        file_id = ""
 
-    if file_id:
-        db.setdefault("media", {})[action] = {"type": m_type, "id": file_id}
-        save_db(db)
-        del admin_upload_state[user_id]
-        bot.reply_to(message, f"✅ <b>Success:</b> Media for <code>/{action}</code> updated successfully!")
-    else:
-        bot.reply_to(message, "❌ Failed to detect media. Please send a valid Photo, GIF, or Video.")
+        if message.animation:
+            m_type = "animation"
+            file_id = message.animation.file_id
+        elif message.video:
+            m_type = "video"
+            file_id = message.video.file_id
+        elif message.photo:
+            m_type = "photo"
+            file_id = message.photo[-1].file_id
+        elif message.document:
+            m_type = "animation" if message.document.mime_type == "video/mp4" else "photo"
+            file_id = message.document.file_id
 
-# ----------------- COMMAND HANDLERS -----------------
+        if file_id:
+            db.setdefault("media", {})[action] = {"type": m_type, "id": file_id}
+            save_db(db)
+            admin_state.pop(user_id, None)
+            bot.reply_to(message, f"✅ <b>Success:</b> Media for <code>/{action}</code> updated successfully!", reply_markup=get_admin_panel_markup())
+        else:
+            bot.reply_to(message, "❌ Invalid media type. Please send a Photo, GIF, or Video.")
+
+# ----------------- REGULAR USER COMMANDS -----------------
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     if not check_access(message):
@@ -575,6 +821,9 @@ def handle_unban_request(message):
         "requested_time": req_time,
         "requested_date": req_date
     }
+    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
+    if str(user_id) in db.get("users", {}):
+        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
     save_db(db)
 
     caption = (
@@ -629,6 +878,9 @@ def handle_ban_request(message):
         "requested_time": req_time,
         "requested_date": req_date
     }
+    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
+    if str(user_id) in db.get("users", {}):
+        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
     save_db(db)
 
     caption = (
@@ -696,5 +948,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("Dual Tracker Bot is active...")
+    print("Dual Tracker Bot with Full Admin Suite is active...")
     run_bot_polling()

@@ -48,15 +48,15 @@ threading.Thread(target=run_server, daemon=True).start()
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = "8950259719:AAGW4Bf5vXmFBO6VaVSGedl1LgjHoLO5U-k"
 INSTAGRAM_SESSION_ID = "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA"
+CLAIM_SECRET_PASSWORD = "mansour$vx"
 
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
-
 CHECK_INTERVAL_SECONDS = 15
 DB_FILE = "dual_tracker_db.json"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
-# In-memory transient state for admin flows
+# In-memory states for multi-step admin flows
 admin_state = {}
 
 # ----------------- DATABASE -----------------
@@ -75,15 +75,15 @@ def load_db():
             "total_monitored": 0
         },
         "channels": [
-            {"id": "c1", "name": "📢 Jyoex", "tag": "@jyoex", "link": "https://t.me/jyoex", "color": "🟢"},
-            {"id": "c2", "name": "📢 Comchater", "tag": "@Comchater", "link": "https://t.me/Comchater", "color": "🟢"},
-            {"id": "c3", "name": "📢 Foraremy", "tag": "@Foraremy", "link": "https://t.me/Foraremy", "color": "🟢"}
+            {"id": "c1", "name": "Jyoex", "tag": "@jyoex", "link": "https://t.me/jyoex", "color": "📢"},
+            {"id": "c2", "name": "Comchater", "tag": "@Comchater", "link": "https://t.me/Comchater", "color": "📢"},
+            {"id": "c3", "name": "Foraremy", "tag": "@Foraremy", "link": "https://t.me/Foraremy", "color": "📢"}
         ],
         "media": {
-            "ub_req": {"type": "animation", "id": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif"},
-            "ub_done": {"type": "animation", "id": "https://media.giphy.com/media/26u4cqiYI30juCOGY/giphy.gif"},
-            "b_req": {"type": "animation", "id": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif"},
-            "b_done": {"type": "animation", "id": "https://media.giphy.com/media/l2YWg3f6m0tI7Ff2w/giphy.gif"},
+            "ub_req": {"type": "animation", "id": "https://media.giphy.com/media/xT9IgzoKnwFNmISR8I/giphy.gif"},
+            "ub_done": {"type": "animation", "id": "https://media.giphy.com/media/l41lI4bYmcsPJX9Go/giphy.gif"},
+            "b_req": {"type": "animation", "id": "https://media.giphy.com/media/xT9IgzoKnwFNmISR8I/giphy.gif"},
+            "b_done": {"type": "animation", "id": "https://media.giphy.com/media/3o84sw9CmwYJAnRRkI/giphy.gif"},
             "deny": {"type": "animation", "id": "https://media.giphy.com/media/13d2jHlSlxklVe/giphy.gif"}
         }
     }
@@ -128,15 +128,8 @@ def get_ig_link(username):
     clean_user = username.strip().replace("@", "")
     return f'<a href="https://instagram.com/{clean_user}">@{clean_user}</a>'
 
-def is_admin_or_owner(user_id, username=None):
-    if user_id in db.get("admins", []):
-        return True
-    if username and username.lower().replace("@", "") in ["jyoex", "shivuu_vxcom", "shivuu"]:
-        if user_id not in db["admins"]:
-            db["admins"].append(user_id)
-            save_db(db)
-        return True
-    return False
+def is_admin_or_owner(user_id):
+    return user_id in db.get("admins", [])
 
 def register_user(user, chat_id=None):
     user_id = str(user.id)
@@ -247,7 +240,7 @@ def send_custom_media(chat_id, key, caption, reply_to=None):
         print(f"Media send fallback: {e}")
         return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to)
 
-# ----------------- FORCE JOIN VERIFICATION -----------------
+# ----------------- STRICT FORCE JOIN VERIFICATION -----------------
 def get_missing_channels(user_id):
     missing = []
     for ch in db.get("channels", []):
@@ -262,9 +255,9 @@ def get_missing_channels(user_id):
 def build_force_join_markup():
     markup = types.InlineKeyboardMarkup(row_width=1)
     for ch in db.get("channels", []):
-        btn_label = f"{ch.get('color', '🟢')} {ch['name']}"
+        btn_label = f"{ch.get('color', '📢')} {ch['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=ch["link"]))
-    markup.add(types.InlineKeyboardButton("✅ Verify / Try Again", callback_data="verify_channels"))
+    markup.add(types.InlineKeyboardButton("✅ Verify", callback_data="verify_channels"))
     return markup
 
 def check_access(message):
@@ -272,9 +265,25 @@ def check_access(message):
     chat = message.chat
     register_user(user, chat.id)
 
-    if is_admin_or_owner(user.id, user.username):
+    # 1. Admin/Owner always has full bypass
+    if is_admin_or_owner(user.id):
         return True
 
+    # 2. STRICT FORCE JOIN CHECK (ALWAYS FIRST IN BOTH DM & GROUP)
+    missing = get_missing_channels(user.id)
+    if missing:
+        mention = get_user_mention(user.id, user.first_name)
+        channel_bullets = "\n".join([f"• {c['tag']}" for c in db.get("channels", [])])
+        text = (
+            f"⚠️ <b>Access Restricted</b>\n\n"
+            f"Hello {mention}, you must join all our required official channels below to access this bot:\n\n"
+            f"{channel_bullets}\n\n"
+            "<i>Click each channel to join, then tap Verify:</i>"
+        )
+        bot.reply_to(message, text, reply_markup=build_force_join_markup())
+        return False
+
+    # 3. Maintenance Check
     if db.get("settings", {}).get("maintenance", False):
         maintenance_msg = (
             "🛠 <b>System Maintenance Notice</b>\n\n"
@@ -285,19 +294,7 @@ def check_access(message):
         bot.reply_to(message, maintenance_msg)
         return False
 
-    missing = get_missing_channels(user.id)
-    if missing:
-        mention = get_user_mention(user.id, user.first_name)
-        channel_bullets = "\n".join([f"• {c['tag']}" for c in db.get("channels", [])])
-        text = (
-            f"⚠️ <b>Access Restricted</b>\n\n"
-            f"Hello {mention}, you must join all our official channels before using this bot:\n\n"
-            f"{channel_bullets}\n\n"
-            "<i>Click below to join and press Verify:</i>"
-        )
-        bot.reply_to(message, text, reply_markup=build_force_join_markup())
-        return False
-
+    # 4. DM Usage Redirect (Only after force join is verified)
     if chat.type == "private":
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Official Group", url="https://t.me/Comchater"))
@@ -316,12 +313,12 @@ def check_access(message):
 def handle_verify_callback(call):
     missing = get_missing_channels(call.from_user.id)
     if missing:
-        bot.answer_callback_query(call.id, "❌ You haven't joined all channels yet! Please join and try again.", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ You haven't joined all channels yet! Please join all channels above.", show_alert=True)
     else:
         bot.answer_callback_query(call.id, "✅ Verified! You can now use the bot in @Comchater", show_alert=True)
         try:
             bot.edit_message_text(
-                "✅ <b>Access Granted!</b> You can now use commands in our official group <b>@Comchater</b>.",
+                "✅ <b>Access Granted!</b> You are verified. You can now use commands inside <b>@Comchater</b>.",
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id
             )
@@ -342,7 +339,7 @@ def handle_new_chat_members(message):
                     pass
                 return
 
-            if is_admin_or_owner(message.from_user.id, message.from_user.username):
+            if is_admin_or_owner(message.from_user.id):
                 return
 
             try:
@@ -504,35 +501,38 @@ def get_admin_panel_markup():
     )
     return markup
 
+# ----------------- PASSWORD PROTECTED /claim -----------------
 @bot.message_handler(commands=['claim'])
 def handle_claim(message):
     if message.chat.type != "private":
         return
     user_id = message.from_user.id
-    if user_id not in db["admins"]:
-        db["admins"].append(user_id)
-        save_db(db)
-    bot.reply_to(message, "👑 <b>Success:</b> You are now registered as Owner/Admin! Send <code>/admin</code> to open panel.")
+    if is_admin_or_owner(user_id):
+        bot.reply_to(message, "👑 You are already authorized as Admin. Send <code>/admin</code> to open panel.")
+        return
+
+    admin_state[user_id] = "waiting_claim_password"
+    bot.reply_to(message, "🔒 <b>Owner Verification Required</b>\n\nPlease enter the secret admin password:")
 
 @bot.message_handler(commands=['admin'])
 def handle_admin(message):
     user_id = message.from_user.id
-    if not is_admin_or_owner(user_id, message.from_user.username):
-        bot.reply_to(message, "<b>Access Denied:</b> Send <code>/claim</code> in private DM first.")
+    if not is_admin_or_owner(user_id):
+        bot.reply_to(message, "⛔ <b>Access Denied:</b> Administrator permission required. Send <code>/claim</code> first.")
         return
     
     admin_text = (
         "🔧 <b>Administrator Control Panel</b>\n\n"
-        "Welcome to the bot master management dashboard.\n"
+        "Welcome to the master management dashboard.\n"
         "Select an action from the options below:"
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
 # ----------------- CALLBACK HANDLERS FOR ADMIN -----------------
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("btn_") or call.data.startswith("view_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("view_"))
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
-    if not is_admin_or_owner(user_id, call.from_user.username):
+    if not is_admin_or_owner(user_id):
         bot.answer_callback_query(call.id, "Access Denied", show_alert=True)
         return
 
@@ -638,11 +638,11 @@ def handle_admin_callbacks(call):
     if data == "admin_media":
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton("1️⃣ /ub Request Alert GIF/Media", callback_data="set_ub_req"),
-            types.InlineKeyboardButton("2️⃣ /ub Recovered Alert GIF/Media", callback_data="set_ub_done"),
-            types.InlineKeyboardButton("3️⃣ /b Request Alert GIF/Media", callback_data="set_b_req"),
-            types.InlineKeyboardButton("4️⃣ /b Banned Success Alert GIF/Media", callback_data="set_b_done"),
-            types.InlineKeyboardButton("5️⃣ ⚠️ Deny Alert GIF/Media", callback_data="set_deny"),
+            types.InlineKeyboardButton("1️⃣ /ub Request Alert GIF", callback_data="set_ub_req"),
+            types.InlineKeyboardButton("2️⃣ /ub Recovered Alert GIF", callback_data="set_ub_done"),
+            types.InlineKeyboardButton("3️⃣ /b Request Alert GIF", callback_data="set_b_req"),
+            types.InlineKeyboardButton("4️⃣ /b Banned Alert GIF", callback_data="set_b_done"),
+            types.InlineKeyboardButton("5️⃣ ⚠️ Deny Alert GIF", callback_data="set_deny"),
             types.InlineKeyboardButton("👁 View All Set Media", callback_data="view_all_media"),
             types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
         )
@@ -655,7 +655,7 @@ def handle_admin_callbacks(call):
         )
         return
 
-    # 5.1 Set Media
+    # 5.1 Set Media Action
     if data.startswith("set_"):
         action = data.replace("set_", "")
         admin_state[user_id] = f"waiting_media_{action}"
@@ -679,7 +679,7 @@ def handle_admin_callbacks(call):
 
     # 5.2 View All Media
     if data == "view_all_media":
-        bot.answer_callback_query(call.id, "Sending all previews...")
+        bot.answer_callback_query(call.id, "Sending previews...")
         stages = [
             ("ub_req", "1. /ub Request Alert"),
             ("ub_done", "2. /ub Recovered Alert"),
@@ -698,7 +698,7 @@ def handle_admin_callbacks(call):
         for ch in db.get("channels", []):
             markup.add(
                 types.InlineKeyboardButton(f"✏️ Rename: {ch['name']}", callback_data=f"btn_name_{ch['id']}"),
-                types.InlineKeyboardButton(f"🎨 Color Theme: {ch.get('color', '🟢')}", callback_data=f"btn_color_{ch['id']}")
+                types.InlineKeyboardButton(f"🎨 Color Theme: {ch.get('color', '📢')}", callback_data=f"btn_color_{ch['id']}")
             )
         markup.add(types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back"))
         bot.edit_message_text(
@@ -718,46 +718,56 @@ def handle_admin_callbacks(call):
         markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
         bot.edit_message_text(
             f"✏️ <b>Enter New Button Text for Channel ({cid}):</b>\n\n"
-            "Type and send the new name (e.g., <i>📢 Official Network</i>):",
+            "Type and send the new name (e.g., <i>Official Network</i>):",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup
         )
         return
 
-    # 6.2 Change Button Color Theme
+    # 6.2 Change Button Color Theme Menu
     if data.startswith("btn_color_"):
         cid = data.replace("btn_color_", "")
+        color_map = [
+            ("green", "🟢"), ("red", "🔴"), ("blue", "🔵"),
+            ("yellow", "🟡"), ("purple", "🟣"), ("black", "⚫"),
+            ("white", "⚪"), ("fire", "🔥"), ("horn", "📢")
+        ]
         markup = types.InlineKeyboardMarkup(row_width=3)
-        colors = ["🟢", "🔴", "🔵", "🟡", "🟣", "⚫", "⚪", "🔥", "⚡"]
-        buttons = [types.InlineKeyboardButton(c, callback_data=f"setcol_{cid}_{c}") for c in colors]
+        buttons = [types.InlineKeyboardButton(sym, callback_data=f"col_{cid}_{name}") for name, sym in color_map]
         markup.add(*buttons)
         markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="admin_btn_menu"))
         bot.edit_message_text(
-            f"🎨 <b>Select Color Emoji for Channel ({cid}):</b>",
+            f"🎨 <b>Select Emoji for Channel ({cid}):</b>",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup
         )
         return
 
-    # 6.3 Set Color Callback
-    if data.startswith("setcol_"):
+    # 6.3 Handle Color Selection Callback (Fixed parsing)
+    if data.startswith("col_"):
         parts = data.split("_")
         cid = parts[1]
-        color = parts[2]
+        cname = parts[2]
+        sym_dict = {
+            "green": "🟢", "red": "🔴", "blue": "🔵",
+            "yellow": "🟡", "purple": "🟣", "black": "⚫",
+            "white": "⚪", "fire": "🔥", "horn": "📢"
+        }
+        chosen_symbol = sym_dict.get(cname, "📢")
         for ch in db.get("channels", []):
             if ch["id"] == cid:
-                ch["color"] = color
+                ch["color"] = chosen_symbol
                 break
         save_db(db)
-        bot.answer_callback_query(call.id, f"Color updated to {color}", show_alert=True)
-        # Refresh button menu
+        bot.answer_callback_query(call.id, f"Color updated to {chosen_symbol}", show_alert=True)
+        # Refresh menu
         markup = types.InlineKeyboardMarkup(row_width=1)
         for ch in db.get("channels", []):
             markup.add(
                 types.InlineKeyboardButton(f"✏️ Rename: {ch['name']}", callback_data=f"btn_name_{ch['id']}"),
-                types.InlineKeyboardButton(f"🎨 Color Theme: {ch.get('color', '🟢')}", callback_data=f"btn_color_{ch['id']}")
+                types.InlineKeyboardButton(f"🎨 Color Theme: {ch.get('color', '📢')}", callback_data=f"btn_color_{ch['id']}")
             )
         markup.add(types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back"))
         bot.edit_message_text("🔘 <b>Force Join Button Customizer</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -777,7 +787,7 @@ def handle_admin_callbacks(call):
         )
         return
 
-    # Back
+    # Back to Main
     if data == "admin_back":
         bot.edit_message_text(
             "🔧 <b>Administrator Control Panel</b>\n\nSelect an action below:",
@@ -798,11 +808,23 @@ def handle_cancel_action(call):
         reply_markup=get_admin_panel_markup()
     )
 
-# ----------------- ADMIN INPUT LISTENERS (MAILING, MEDIA, BUTTONS) -----------------
+# ----------------- ADMIN INPUT LISTENERS -----------------
 @bot.message_handler(content_types=['text', 'photo', 'video', 'animation', 'document', 'audio', 'voice', 'sticker'], func=lambda msg: msg.from_user.id in admin_state)
 def process_admin_inputs(message):
     user_id = message.from_user.id
     state = admin_state.get(user_id)
+
+    # 0. Handle Claim Password verification
+    if state == "waiting_claim_password":
+        admin_state.pop(user_id, None)
+        if message.text and message.text.strip() == CLAIM_SECRET_PASSWORD:
+            if user_id not in db["admins"]:
+                db.setdefault("admins", []).append(user_id)
+                save_db(db)
+            bot.reply_to(message, "👑 <b>Password Verified!</b> You are now registered as Owner/Admin. Send <code>/admin</code> to open panel.")
+        else:
+            bot.reply_to(message, "❌ <b>Incorrect Password!</b> Access Denied.")
+        return
 
     if message.text and message.text.lower() in ["/cancel", "cancel"]:
         admin_state.pop(user_id, None)

@@ -1,4 +1,4 @@
-import os
+
 import sys
 import time
 import json
@@ -1123,4 +1123,4 @@ def run_bot_polling():
 if __name__ == "__main__":
     _verify_integrity()
     print("Dual Tracker Bot is active and running...", flush=True)
-    run_bot_polling()
+    run_bot_polling

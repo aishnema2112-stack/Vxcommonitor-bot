@@ -10,19 +10,19 @@ import telebot
 from telebot import types
 from datetime import datetime, timezone, timedelta
 
-# ----------------- TAMPER-PROOF SECURITY & CREDITS -----------------
+# ----------------- TAMPER-PROOF CREDITS -----------------
 DEVELOPER_TAG = "@jyoex"
 DEV_CHANNEL = "JYOEX NETWORK"
 
 def _verify_integrity():
     if DEVELOPER_TAG != "@jyoex" or DEV_CHANNEL != "JYOEX NETWORK":
-        print("[SECURITY] Unauthorized modification detected.")
+        print("[SECURITY] Tamper detected.")
         sys.exit(1)
 
 _verify_integrity()
-# -------------------------------------------------------------------
+# --------------------------------------------------------
 
-# ----------------- 24/7 WEB SERVER FOR RENDER ----------------------
+# ----------------- 24/7 WEB SERVER FOR RENDER -----------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -42,17 +42,17 @@ def run_server():
         print(f"Web server error: {e}")
 
 threading.Thread(target=run_server, daemon=True).start()
-# -------------------------------------------------------------------
+# -------------------------------------------------------------
 
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = "8950259719:AAGW4Bf5vXmFBO6VaVSGedl1LgjHoLO5U-k"
-OWNER_ID = 6932470123  # <-- Apni Telegram Numerical User ID
+OWNER_ID = 6932470123  # <-- Replace with your exact numerical Telegram User ID
+INSTAGRAM_SESSION_ID = "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA"
 
-# REQUIRED FORCE JOIN CHANNELS
 FORCE_CHANNELS = [
-    {"name": "Channel 1", "tag": "@jyoex", "link": "https://t.me/jyoex"},
-    {"name": "Channel 2", "tag": "@Comchater", "link": "https://t.me/Comchater"},
-    {"name": "Channel 3", "tag": "@Foraremy", "link": "https://t.me/Foraremy"}
+    {"name": "Main", "tag": "@jyoex", "link": "https://t.me/jyoex"},
+    {"name": "Chat", "tag": "@Comchater", "link": "https://t.me/Comchater"},
+    {"name": "Army", "tag": "@Foraremy", "link": "https://t.me/Foraremy"}
 ]
 
 CHECK_INTERVAL_SECONDS = 15
@@ -68,7 +68,8 @@ def load_db():
         "media": {
             "m": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif",
             "ub": "https://media.giphy.com/media/26u4cqiYI30juCOGY/giphy.gif",
-            "b": "https://media.giphy.com/media/l2YWg3f6m0tI7Ff2w/giphy.gif"
+            "b": "https://media.giphy.com/media/l2YWg3f6m0tI7Ff2w/giphy.gif",
+            "deny": "https://media.giphy.com/media/13d2jHlSlxklVe/giphy.gif"
         }
     }
     if os.path.exists(DB_FILE):
@@ -127,7 +128,7 @@ def format_time_taken(seconds_elapsed):
     parts = []
     if days > 0:
         parts.append(f"{days}d")
-    if hours > 0:
+    if hours > 0 or days > 0:
         parts.append(f"{hours}h")
     if minutes > 0 or hours > 0 or days > 0:
         parts.append(f"{minutes}m")
@@ -144,7 +145,7 @@ def extract_username(message):
     clean = re.sub(r'[^a-z0-9._]', '', raw)
     return clean if clean else None
 
-# ----------------- MULTI-CHANNEL FORCE JOIN CHECK -----------------
+# ----------------- ACCESS CONTROL & FORCE CHANNELS -----------------
 def get_missing_channels(user_id):
     missing = []
     for ch in FORCE_CHANNELS:
@@ -153,7 +154,6 @@ def get_missing_channels(user_id):
             if member.status not in ['creator', 'administrator', 'member']:
                 missing.append(ch)
         except Exception:
-            # Agar bot channel me admin nahi hai toh error ignore karein
             pass
     return missing
 
@@ -161,85 +161,115 @@ def check_access(message):
     user_id = message.from_user.id
     chat_type = message.chat.type
 
-    # 1. Private Chat Restriction: Only Owner Allowed
-    if chat_type == "private" and user_id != OWNER_ID:
-        bot.reply_to(
-            message,
-            "<b>Access Denied</b>\n\n"
-            "This bot is private and can only be used in authorized groups.\n"
-            f"Developer: {DEVELOPER_TAG}"
-        )
-        return False
-
-    # 2. Force Channels Check
-    if chat_type in ["group", "supergroup"]:
-        missing = get_missing_channels(user_id)
-        if missing:
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            for ch in missing:
-                markup.add(types.InlineKeyboardButton(f"Join {ch['tag']}", url=ch["link"]))
-            
-            user_name = message.from_user.first_name or "User"
+    # 1. Private Chat: ONLY Owner can use commands
+    if chat_type == "private":
+        if user_id != OWNER_ID:
             bot.reply_to(
                 message,
-                f"<b>Access Required</b>\n\n"
-                f"{user_name}, you must join all our official channels before using the bot.\n"
-                f"Please join below to unlock commands:",
+                "<b>Access Denied</b>\n\n"
+                "This bot only works inside official groups.\n"
+                f"Developer: {DEVELOPER_TAG}"
+            )
+            return False
+        return True
+
+    # 2. Group Chats: Force Join Check
+    missing = get_missing_channels(user_id)
+    if missing:
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for ch in missing:
+            markup.add(types.InlineKeyboardButton(f"Join {ch['tag']}", url=ch["link"]))
+        
+        user_name = message.from_user.first_name or "User"
+        bot.reply_to(
+            message,
+            f"<b>Access Required</b>\n\n"
+            f"{user_name}, join our channels to use this bot.",
+            reply_markup=markup
+        )
+        try:
+            bot.send_message(
+                user_id,
+                "<b>Access Required</b>\n\n"
+                "Please join our required channels to unlock bot commands:",
                 reply_markup=markup
             )
-            try:
-                bot.send_message(
-                    user_id,
-                    "<b>Access Required</b>\n\n"
-                    "Please join all required channels below to use the bot:",
-                    reply_markup=markup
-                )
-            except Exception:
-                pass
-            return False
+        except Exception:
+            pass
+        return False
 
     return True
 
-# ----------------- REAL-TIME INSTAGRAM SCRAPER -----------------
+# ----------------- 100% ACCURATE INSTAGRAM CHECKER -----------------
 def get_instagram_details(username):
     username = username.strip().lower().replace("@", "")
-    
+    ds_user_id = INSTAGRAM_SESSION_ID.split(":")[0] if ":" in INSTAGRAM_SESSION_ID else ""
+
+    # Method 1: Authenticated Mobile Internal API (Most Accurate)
     try:
-        url = f"https://www.instagram.com/{username}/"
+        url = f"https://i.instagram.com/api/v1/users/{username}/usernameinfo/"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
+            "User-Agent": "Instagram 278.0.0.19.115 Android (33/13; 440dpi; 1080x2400; Xiaomi; sweet; en_US; 458229237)",
+            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};",
+            "X-IG-App-ID": "936619743392459"
         }
         res = requests.get(url, headers=headers, timeout=6)
         if res.status_code == 200:
-            if "Page Not Found" in res.text or "isn't available" in res.text:
-                return {"active": False, "followers": "0", "following": "0"}
-            
-            match = re.search(r'content="([0-9.,kKmM]+)\s+Followers,\s*([0-9.,kKmM]+)\s+Following', res.text)
+            user = res.json().get("user", {})
+            if user:
+                return {
+                    "active": True,
+                    "followers": user.get("follower_count", 0),
+                    "following": user.get("following_count", 0)
+                }
+        elif res.status_code == 404:
+            return {"active": False, "followers": 0, "following": 0}
+    except Exception:
+        pass
+
+    # Method 2: Web Profile API Layer
+    try:
+        web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+        web_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "x-ig-app-id": "936619743392459",
+            "Referer": f"https://www.instagram.com/{username}/",
+            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};"
+        }
+        res2 = requests.get(web_url, headers=web_headers, timeout=6)
+        if res2.status_code == 200:
+            data = res2.json().get("data", {}).get("user")
+            if data:
+                return {
+                    "active": True,
+                    "followers": data.get("edge_followed_by", {}).get("count", 0),
+                    "following": data.get("edge_follow", {}).get("count", 0)
+                }
+            return {"active": False, "followers": 0, "following": 0}
+        elif res2.status_code == 404:
+            return {"active": False, "followers": 0, "following": 0}
+    except Exception:
+        pass
+
+    # Method 3: Public Profile Scraper Fallback
+    try:
+        p_url = f"https://www.instagram.com/{username}/"
+        p_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        p_res = requests.get(p_url, headers=p_headers, timeout=5, allow_redirects=False)
+        if p_res.status_code == 200:
+            match = re.search(r'content="([0-9.,kKmM]+)\s+Followers,\s*([0-9.,kKmM]+)\s+Following', p_res.text)
             if match:
                 return {
                     "active": True,
                     "followers": match.group(1),
                     "following": match.group(2)
                 }
-            if f'instagram.com/{username}' in res.text:
-                return {"active": True, "followers": "Active", "following": "Active"}
-        elif res.status_code == 404:
-            return {"active": False, "followers": "0", "following": "0"}
+        elif p_res.status_code == 404:
+            return {"active": False, "followers": 0, "following": 0}
     except Exception:
         pass
 
-    try:
-        o_url = f"https://api.instagram.com/oembed/?url=https://www.instagram.com/{username}/"
-        r = requests.get(o_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        if r.status_code == 200:
-            return {"active": True, "followers": "Active", "following": "Active"}
-        elif r.status_code in [400, 404]:
-            return {"active": False, "followers": "0", "following": "0"}
-    except Exception:
-        pass
-
-    return {"active": False, "followers": "0", "following": "0"}
+    return {"active": False, "followers": 0, "following": 0}
 
 # ----------------- MEDIA SENDER HELPER -----------------
 def send_custom_media(chat_id, media_url, caption, reply_to=None):
@@ -343,8 +373,8 @@ def handle_start(message):
     welcome_text = (
         f"<b>Welcome {user_name}</b>\n\n"
         "<b>Commands:</b>\n"
-        "• <code>/ub username</code> — Monitor recovery / unban\n"
-        "• <code>/b username</code> — Monitor ban\n"
+        "• <code>/ub username</code> — Monitor account recovery / unban\n"
+        "• <code>/b username</code> — Monitor account for ban\n"
         "• <code>/status</code> — Monitored accounts list\n"
         "• <code>/help</code> — Instructions\n\n"
         f"Powered by: {DEVELOPER_TAG}"
@@ -361,7 +391,7 @@ def handle_unban_request(message):
     user_name = message.from_user.first_name or "User"
 
     if not username:
-        bot.reply_to(message, "<b>Usage:</b> <code>/ub username</code>\n<b>Example:</b> <code>/ub ambient.rot</code>")
+        bot.reply_to(message, "<b>Usage:</b> <code>/ub username</code>\n<b>Example:</b> <code>/ub gt5available</code>")
         return
 
     if username in db.get("unban_monitors", {}):
@@ -372,11 +402,13 @@ def handle_unban_request(message):
     if status["active"] is True:
         f_by = format_count(status["followers"])
         f_to = format_count(status["following"])
-        bot.reply_to(
-            message,
+        caption = (
             f"<b>@{username}</b> is already active.\n\n"
-            f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>"
+            f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+            f"Requested by: <b>{user_name}</b>"
         )
+        deny_media = db.get("media", {}).get("deny")
+        send_custom_media(message.chat.id, deny_media, caption, reply_to=message.message_id)
         return
 
     req_time = get_current_time_str()
@@ -412,7 +444,7 @@ def handle_ban_request(message):
     user_name = message.from_user.first_name or "User"
 
     if not username:
-        bot.reply_to(message, "<b>Usage:</b> <code>/b username</code>\n<b>Example:</b> <code>/b ambient.rot</code>")
+        bot.reply_to(message, "<b>Usage:</b> <code>/b username</code>\n<b>Example:</b> <code>/b gt5available</code>")
         return
 
     if username in db.get("ban_monitors", {}):
@@ -421,7 +453,12 @@ def handle_ban_request(message):
 
     status = get_instagram_details(username)
     if status["active"] is False:
-        bot.reply_to(message, f"<b>@{username}</b> is already banned or unavailable.")
+        caption = (
+            f"<b>@{username}</b> is already banned or unavailable.\n\n"
+            f"Requested by: <b>{user_name}</b>"
+        )
+        deny_media = db.get("media", {}).get("deny")
+        send_custom_media(message.chat.id, deny_media, caption, reply_to=message.message_id)
         return
 
     f_by = format_count(status["followers"])
@@ -481,47 +518,38 @@ def handle_status(message):
 
     bot.reply_to(message, "\n".join(lines))
 
-# ----------------- ADMIN DASHBOARD & SETPIC -----------------
+# ----------------- ADMIN DASHBOARD (PRIVATE DM ONLY) -----------------
 @bot.message_handler(commands=['admin'])
 def handle_admin(message):
-    if message.from_user.id != OWNER_ID:
+    if message.chat.type != "private" or message.from_user.id != OWNER_ID:
         return
+    
     admin_text = (
-        "<b>Admin Media Settings</b>\n\n"
-        "• <code>/setpic m &lt;url&gt;</code> — Set Monitoring Media\n"
-        "• <code>/setpic ub &lt;url&gt;</code> — Set Unban Alert Media\n"
-        "• <code>/setpic b &lt;url&gt;</code> — Set Ban Alert Media\n\n"
-        f"Current M: <code>{db['media']['m']}</code>"
+        "<b>Admin Settings & Media Customizer</b>\n\n"
+        "<b>Change GIF / Photo for Commands:</b>\n"
+        "• <code>/setpic m &lt;link&gt;</code> — Monitoring added\n"
+        "• <code>/setpic ub &lt;link&gt;</code> — Recovery Alert\n"
+        "• <code>/setpic b &lt;link&gt;</code> — Ban Alert\n"
+        "• <code>/setpic deny &lt;link&gt;</code> — Already Active / Banned\n\n"
+        f"Current M Link: <code>{db['media']['m']}</code>"
     )
     bot.reply_to(message, admin_text)
 
 @bot.message_handler(commands=['setpic'])
 def handle_setpic(message):
-    if message.from_user.id != OWNER_ID:
+    if message.chat.type != "private" or message.from_user.id != OWNER_ID:
         return
+    
     parts = message.text.split()
-    if len(parts) < 3 or parts[1] not in ["m", "ub", "b"]:
-        bot.reply_to(message, "<b>Usage:</b> <code>/setpic ub https://image-link.gif</code>")
+    if len(parts) < 3 or parts[1] not in ["m", "ub", "b", "deny"]:
+        bot.reply_to(message, "<b>Usage:</b> <code>/setpic ub https://link-to-gif.gif</code>")
         return
 
     pic_type = parts[1]
     url = parts[2]
     db.setdefault("media", {})[pic_type] = url
     save_db(db)
-    bot.reply_to(message, f"<b>Updated:</b> Media for <code>/{pic_type}</code> set successfully.")
-
-# ----------------- /help COMMAND -----------------
-@bot.message_handler(commands=['help', 'h'])
-def handle_help(message):
-    if not check_access(message):
-        return
-    help_text = (
-        "<b>Help & Commands:</b>\n\n"
-        "• <code>/ub &lt;username&gt;</code> — Monitor account recovery / unban\n"
-        "• <code>/b &lt;username&gt;</code> — Monitor account for ban\n"
-        "• <code>/status</code> — Check active monitors"
-    )
-    bot.reply_to(message, help_text)
+    bot.reply_to(message, f"<b>Success:</b> Media for <code>/{pic_type}</code> updated.")
 
 # ----------------- POLLING -----------------
 def run_bot_polling():
@@ -534,5 +562,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("Dual Tracker Bot with Multi-Channel Force Join is active...")
+    print("Dual Tracker Bot is active...")
     run_bot_polling()

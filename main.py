@@ -1,4 +1,4 @@
-
+import os
 import sys
 import time
 import json
@@ -10,6 +10,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 from telebot import types
 from datetime import datetime, timezone, timedelta
+from pymongo import MongoClient
 
 # Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)
@@ -48,8 +49,9 @@ def run_server():
 threading.Thread(target=run_server, daemon=True).start()
 
 # ----------------- CONFIGURATION -----------------
-BOT_TOKEN = "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU"
-INSTAGRAM_SESSION_ID = "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
+INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA")
+MONGO_URI = os.environ.get("MONGO_URI")
 
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
@@ -61,9 +63,21 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=Tru
 admin_state = {}
 user_message_history = {}
 
-# ----------------- DATABASE -----------------
-def load_db():
-    default_data = {
+# ----------------- MONGODB & FALLBACK ENGINE -----------------
+mongo_col = None
+if MONGO_URI:
+    try:
+        client = MongoClient(MONGO_URI)
+        mongo_db = client["vxcom_monitor_db"]
+        mongo_col = mongo_db["bot_data"]
+        print("✅ Connected to MongoDB Atlas successfully!", flush=True)
+    except Exception as e:
+        print(f"⚠️ MongoDB Connection Failed: {e}", flush=True)
+        mongo_col = None
+
+def get_default_db_data():
+    return {
+        "_id": "global_config",
         "unban_monitors": {},
         "ban_monitors": {},
         "admins": [],
@@ -116,6 +130,24 @@ def load_db():
             }
         }
     }
+
+def load_db():
+    default_data = get_default_db_data()
+
+    if mongo_col is not None:
+        try:
+            doc = mongo_col.find_one({"_id": "global_config"})
+            if doc:
+                for k, v in default_data.items():
+                    if k not in doc:
+                        doc[k] = v
+                return doc
+            else:
+                mongo_col.insert_one(default_data)
+                return default_data
+        except Exception as e:
+            print(f"MongoDB Fetch error: {e}", flush=True)
+
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
@@ -123,23 +155,25 @@ def load_db():
                 for k, v in default_data.items():
                     if k not in data:
                         data[k] = v
-                for ch in data.get("channels", []):
-                    if ch.get("id") == "c3":
-                        ch["name"] = "Sell Hub"
-                        ch["link"] = "https://t.me/+gM43iG6v-vFmYjc1"
-                data.setdefault("media", {})["deny"] = default_data["media"]["deny"]
-                data.setdefault("media", {})["subscription"] = default_data["media"]["subscription"]
                 return data
         except Exception:
             return default_data
     return default_data
 
 def save_db(data):
+    if mongo_col is not None:
+        try:
+            clean_data = dict(data)
+            clean_data["_id"] = "global_config"
+            mongo_col.replace_one({"_id": "global_config"}, clean_data, upsert=True)
+        except Exception as e:
+            print(f"MongoDB Save error: {e}", flush=True)
+
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+            json.dump(data, f, indent=4, default=str)
     except Exception as e:
-        print(f"DB Error: {e}", flush=True)
+        print(f"Local DB Error: {e}", flush=True)
 
 db = load_db()
 
@@ -273,7 +307,6 @@ def extract_username(message):
 # ----------------- MEDIA SENDER ENGINE -----------------
 def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
     media_data = db.get("media", {}).get(key)
-    # Group messages do not protect content so screenshot is allowed
     is_protected = True if chat_id > 0 else False
 
     if not media_data:
@@ -650,6 +683,7 @@ def handle_admin_callbacks(call):
         ub_count = len(db.get("unban_monitors", {}))
         b_count = len(db.get("ban_monitors", {}))
         total_tracked = db.get("stats", {}).get("total_monitored", 0) + ub_count + b_count
+        db_mode = "MongoDB Atlas ☁️" if mongo_col is not None else "Local JSON 📁"
 
         stats_text = (
             "📊 <b>Bot Real-time Analytics Dashboard</b>\n\n"
@@ -658,6 +692,7 @@ def handle_admin_callbacks(call):
             f"⚡ <b>Awaiting Unban (/ub):</b> <code>{ub_count}</code>\n"
             f"🚫 <b>Awaiting Ban (/b):</b> <code>{b_count}</code>\n"
             f"📈 <b>Total Accounts Tracked:</b> <code>{total_tracked:,}</code>\n"
+            f"💾 <b>Database Engine:</b> <code>{db_mode}</code>\n"
             f"🕒 <b>Server Status:</b> <code>Online 24/7 (Render)</code>"
         )
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -1123,4 +1158,4 @@ def run_bot_polling():
 if __name__ == "__main__":
     _verify_integrity()
     print("Dual Tracker Bot is active and running...", flush=True)
-    run_bot_polling
+    run_bot_polling()

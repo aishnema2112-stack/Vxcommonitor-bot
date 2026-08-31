@@ -51,16 +51,10 @@ INSTAGRAM_SESSION_ID = "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAo
 
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
 
-FORCE_CHANNELS = [
-    {"name": "📢 Jyoex", "tag": "@jyoex", "link": "https://t.me/jyoex"},
-    {"name": "📢 Comchater", "tag": "@Comchater", "link": "https://t.me/Comchater"},
-    {"name": "📢 Foraremy", "tag": "@Foraremy", "link": "https://t.me/Foraremy"}
-]
-
 CHECK_INTERVAL_SECONDS = 15
 DB_FILE = "dual_tracker_db.json"
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
 # In-memory transient state for admin flows
 admin_state = {}
@@ -80,10 +74,16 @@ def load_db():
         "stats": {
             "total_monitored": 0
         },
+        "channels": [
+            {"id": "c1", "name": "📢 Jyoex", "tag": "@jyoex", "link": "https://t.me/jyoex", "color": "🟢"},
+            {"id": "c2", "name": "📢 Comchater", "tag": "@Comchater", "link": "https://t.me/Comchater", "color": "🟢"},
+            {"id": "c3", "name": "📢 Foraremy", "tag": "@Foraremy", "link": "https://t.me/Foraremy", "color": "🟢"}
+        ],
         "media": {
-            "m": {"type": "animation", "id": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif"},
-            "ub": {"type": "animation", "id": "https://media.giphy.com/media/26u4cqiYI30juCOGY/giphy.gif"},
-            "b": {"type": "animation", "id": "https://media.giphy.com/media/l2YWg3f6m0tI7Ff2w/giphy.gif"},
+            "ub_req": {"type": "animation", "id": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif"},
+            "ub_done": {"type": "animation", "id": "https://media.giphy.com/media/26u4cqiYI30juCOGY/giphy.gif"},
+            "b_req": {"type": "animation", "id": "https://media.giphy.com/media/3o7TKTDnUxE0g2fSE8/giphy.gif"},
+            "b_done": {"type": "animation", "id": "https://media.giphy.com/media/l2YWg3f6m0tI7Ff2w/giphy.gif"},
             "deny": {"type": "animation", "id": "https://media.giphy.com/media/13d2jHlSlxklVe/giphy.gif"}
         }
     }
@@ -124,6 +124,10 @@ def get_user_mention(user_id, first_name):
     clean_name = first_name.replace("<", "").replace(">", "") if first_name else "User"
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
+def get_ig_link(username):
+    clean_user = username.strip().replace("@", "")
+    return f'<a href="https://instagram.com/{clean_user}">@{clean_user}</a>'
+
 def is_admin_or_owner(user_id, username=None):
     if user_id in db.get("admins", []):
         return True
@@ -148,7 +152,6 @@ def register_user(user, chat_id=None):
         }
         save_db(db)
 
-        # Send New User Alert if enabled
         if db.get("settings", {}).get("new_user_notify", True):
             mention = get_user_mention(user.id, user.first_name)
             u_tag = f'<a href="tg://user?id={user.id}">@{user.username}</a>' if user.username else "<i>None</i>"
@@ -165,7 +168,6 @@ def register_user(user, chat_id=None):
                 except Exception:
                     pass
     else:
-        # Update user name & username
         db["users"][user_id]["name"] = user.first_name or "Unknown"
         db["users"][user_id]["username"] = f"@{user.username}" if user.username else "No Username"
         save_db(db)
@@ -242,13 +244,13 @@ def send_custom_media(chat_id, key, caption, reply_to=None):
         else:
             return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to)
     except Exception as e:
-        print(f"Media send fallback to text: {e}")
+        print(f"Media send fallback: {e}")
         return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to)
 
 # ----------------- FORCE JOIN VERIFICATION -----------------
 def get_missing_channels(user_id):
     missing = []
-    for ch in FORCE_CHANNELS:
+    for ch in db.get("channels", []):
         try:
             member = bot.get_chat_member(ch["tag"], user_id)
             if member.status not in ['creator', 'administrator', 'member']:
@@ -259,8 +261,9 @@ def get_missing_channels(user_id):
 
 def build_force_join_markup():
     markup = types.InlineKeyboardMarkup(row_width=1)
-    for ch in FORCE_CHANNELS:
-        markup.add(types.InlineKeyboardButton(ch["name"], url=ch["link"]))
+    for ch in db.get("channels", []):
+        btn_label = f"{ch.get('color', '🟢')} {ch['name']}"
+        markup.add(types.InlineKeyboardButton(btn_label, url=ch["link"]))
     markup.add(types.InlineKeyboardButton("✅ Verify / Try Again", callback_data="verify_channels"))
     return markup
 
@@ -269,11 +272,9 @@ def check_access(message):
     chat = message.chat
     register_user(user, chat.id)
 
-    # 1. Admin/Owner always has full bypass
     if is_admin_or_owner(user.id, user.username):
         return True
 
-    # 2. Maintenance Check (Clean English Notice)
     if db.get("settings", {}).get("maintenance", False):
         maintenance_msg = (
             "🛠 <b>System Maintenance Notice</b>\n\n"
@@ -284,20 +285,19 @@ def check_access(message):
         bot.reply_to(message, maintenance_msg)
         return False
 
-    # 3. Force Join Channels Check
     missing = get_missing_channels(user.id)
     if missing:
         mention = get_user_mention(user.id, user.first_name)
+        channel_bullets = "\n".join([f"• {c['tag']}" for c in db.get("channels", [])])
         text = (
             f"⚠️ <b>Access Restricted</b>\n\n"
             f"Hello {mention}, you must join all our official channels before using this bot:\n\n"
-            "• @jyoex\n• @Comchater\n• @Foraremy\n\n"
+            f"{channel_bullets}\n\n"
             "<i>Click below to join and press Verify:</i>"
         )
         bot.reply_to(message, text, reply_markup=build_force_join_markup())
         return False
 
-    # 4. DM Usage Block for Non-Admins
     if chat.type == "private":
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Official Group", url="https://t.me/Comchater"))
@@ -422,17 +422,18 @@ def monitor_loop():
                     f_by = format_count(status["followers"])
                     f_to = format_count(status["following"])
                     user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                    ig_link = get_ig_link(username)
 
                     caption = (
                         "🎉 <b>Instagram Account Recovered</b>\n\n"
-                        f"Target: <b>@{username}</b>\n"
+                        f"Target: <b>{ig_link}</b>\n"
                         f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
                         f"Time Taken: <code>{time_str}</code>\n"
                         f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
                         f"👤 Requested by: {user_mention}"
                     )
 
-                    sent_msg = send_custom_media(info["chat_id"], "ub", caption)
+                    sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
                     try:
                         bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
                     except Exception:
@@ -456,17 +457,18 @@ def monitor_loop():
                         f_by = format_count(info.get("followers", "N/A"))
                         f_to = format_count(info.get("following", "N/A"))
                         user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                        ig_link = get_ig_link(username)
 
                         caption = (
                             "🚫 <b>Instagram Account Banned</b>\n\n"
-                            f"Target: <b>@{username}</b>\n"
+                            f"Target: <b>{ig_link}</b>\n"
                             f"Previous Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
                             f"Time Taken: <code>{time_str}</code>\n"
                             f"Banned at: <code>{get_current_time_str()}</code>\n\n"
                             f"👤 Requested by: {user_mention}"
                         )
 
-                        sent_msg = send_custom_media(info["chat_id"], "b", caption)
+                        sent_msg = send_custom_media(info["chat_id"], "b_done", caption)
                         try:
                             bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
                         except Exception:
@@ -484,7 +486,7 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
-# ----------------- ADMIN DASHBOARD & FLOWS -----------------
+# ----------------- ADMIN DASHBOARD -----------------
 def get_admin_panel_markup():
     m_status = "🟢 ON" if db.get("settings", {}).get("maintenance", False) else "⚪ OFF"
     n_status = "🔔 ON" if db.get("settings", {}).get("new_user_notify", True) else "🔕 OFF"
@@ -495,7 +497,8 @@ def get_admin_panel_markup():
         types.InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"),
         types.InlineKeyboardButton(f"🛠 Maintenance ({m_status})", callback_data="toggle_maintenance"),
         types.InlineKeyboardButton(f"👤 New User ({n_status})", callback_data="toggle_notify"),
-        types.InlineKeyboardButton("🖼 Change Media", callback_data="admin_media"),
+        types.InlineKeyboardButton("🖼 Manage Media", callback_data="admin_media"),
+        types.InlineKeyboardButton("🔘 Customize Buttons", callback_data="admin_btn_menu"),
         types.InlineKeyboardButton("👥 Manage Admins", callback_data="admin_manage"),
         types.InlineKeyboardButton("❌ Close Panel", callback_data="admin_close")
     )
@@ -525,8 +528,8 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-# Callback Handlers for Admin Panel
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_"))
+# ----------------- CALLBACK HANDLERS FOR ADMIN -----------------
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("btn_") or call.data.startswith("view_"))
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
     if not is_admin_or_owner(user_id, call.from_user.username):
@@ -599,7 +602,6 @@ def handle_admin_callbacks(call):
             markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="admin_stats"))
             bot.edit_message_text("\n".join(lines), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         else:
-            # Generate detailed TXT file
             out = io.StringIO()
             out.write("==== REGISTERED USERS DATABASE ====\n\n")
             for uid, u in users.items():
@@ -632,24 +634,38 @@ def handle_admin_callbacks(call):
         bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
         return
 
-    # 5. Media Customizer Menu
+    # 5. Media Customizer Sub-Menu
     if data == "admin_media":
-        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton("🔄 /m Media", callback_data="set_m"),
-            types.InlineKeyboardButton("⚡ /ub Media", callback_data="set_ub"),
-            types.InlineKeyboardButton("🚫 /b Media", callback_data="set_b"),
-            types.InlineKeyboardButton("⚠️ Deny Media", callback_data="set_deny"),
-            types.InlineKeyboardButton("🔙 Back", callback_data="admin_back")
+            types.InlineKeyboardButton("1️⃣ /ub Request Alert GIF/Media", callback_data="set_ub_req"),
+            types.InlineKeyboardButton("2️⃣ /ub Recovered Alert GIF/Media", callback_data="set_ub_done"),
+            types.InlineKeyboardButton("3️⃣ /b Request Alert GIF/Media", callback_data="set_b_req"),
+            types.InlineKeyboardButton("4️⃣ /b Banned Success Alert GIF/Media", callback_data="set_b_done"),
+            types.InlineKeyboardButton("5️⃣ ⚠️ Deny Alert GIF/Media", callback_data="set_deny"),
+            types.InlineKeyboardButton("👁 View All Set Media", callback_data="view_all_media"),
+            types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
         )
-        bot.edit_message_text("🖼 <b>Select Command to Change Media:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        bot.edit_message_text(
+            "🖼 <b>Manage & Customize Media:</b>\n\n"
+            "Select any alert stage below to update its Photo/GIF/Video, or tap View to check current media:",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
         return
 
-    # 6. Set Media Action
+    # 5.1 Set Media
     if data.startswith("set_"):
         action = data.replace("set_", "")
         admin_state[user_id] = f"waiting_media_{action}"
-        names = {"m": "Monitoring (/m)", "ub": "Unban Recovery (/ub)", "b": "Ban Alert (/b)", "deny": "Deny Alert"}
+        names = {
+            "ub_req": "/ub Request Added Alert",
+            "ub_done": "/ub Recovered Alert",
+            "b_req": "/b Request Added Alert",
+            "b_done": "/b Banned Success Alert",
+            "deny": "Deny / Active Alert"
+        }
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
         bot.edit_message_text(
@@ -659,6 +675,92 @@ def handle_admin_callbacks(call):
             message_id=call.message.message_id,
             reply_markup=markup
         )
+        return
+
+    # 5.2 View All Media
+    if data == "view_all_media":
+        bot.answer_callback_query(call.id, "Sending all previews...")
+        stages = [
+            ("ub_req", "1. /ub Request Alert"),
+            ("ub_done", "2. /ub Recovered Alert"),
+            ("b_req", "3. /b Request Alert"),
+            ("b_done", "4. /b Banned Alert"),
+            ("deny", "5. Deny Alert")
+        ]
+        for key, name in stages:
+            send_custom_media(call.message.chat.id, key, f"Current Media for: <b>{name}</b>")
+            time.sleep(0.4)
+        return
+
+    # 6. Button Customizer Menu
+    if data == "admin_btn_menu":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for ch in db.get("channels", []):
+            markup.add(
+                types.InlineKeyboardButton(f"✏️ Rename: {ch['name']}", callback_data=f"btn_name_{ch['id']}"),
+                types.InlineKeyboardButton(f"🎨 Color Theme: {ch.get('color', '🟢')}", callback_data=f"btn_color_{ch['id']}")
+            )
+        markup.add(types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back"))
+        bot.edit_message_text(
+            "🔘 <b>Force Join Button Customizer</b>\n\n"
+            "Change Button text or color emojis for your channels:",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        return
+
+    # 6.1 Change Button Name
+    if data.startswith("btn_name_"):
+        cid = data.replace("btn_name_", "")
+        admin_state[user_id] = f"waiting_btn_name_{cid}"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
+        bot.edit_message_text(
+            f"✏️ <b>Enter New Button Text for Channel ({cid}):</b>\n\n"
+            "Type and send the new name (e.g., <i>📢 Official Network</i>):",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        return
+
+    # 6.2 Change Button Color Theme
+    if data.startswith("btn_color_"):
+        cid = data.replace("btn_color_", "")
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        colors = ["🟢", "🔴", "🔵", "🟡", "🟣", "⚫", "⚪", "🔥", "⚡"]
+        buttons = [types.InlineKeyboardButton(c, callback_data=f"setcol_{cid}_{c}") for c in colors]
+        markup.add(*buttons)
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="admin_btn_menu"))
+        bot.edit_message_text(
+            f"🎨 <b>Select Color Emoji for Channel ({cid}):</b>",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        return
+
+    # 6.3 Set Color Callback
+    if data.startswith("setcol_"):
+        parts = data.split("_")
+        cid = parts[1]
+        color = parts[2]
+        for ch in db.get("channels", []):
+            if ch["id"] == cid:
+                ch["color"] = color
+                break
+        save_db(db)
+        bot.answer_callback_query(call.id, f"Color updated to {color}", show_alert=True)
+        # Refresh button menu
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for ch in db.get("channels", []):
+            markup.add(
+                types.InlineKeyboardButton(f"✏️ Rename: {ch['name']}", callback_data=f"btn_name_{ch['id']}"),
+                types.InlineKeyboardButton(f"🎨 Color Theme: {ch.get('color', '🟢')}", callback_data=f"btn_color_{ch['id']}")
+            )
+        markup.add(types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back"))
+        bot.edit_message_text("🔘 <b>Force Join Button Customizer</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         return
 
     # 7. Manage Admins
@@ -675,7 +777,7 @@ def handle_admin_callbacks(call):
         )
         return
 
-    # Back to Main Panel
+    # Back
     if data == "admin_back":
         bot.edit_message_text(
             "🔧 <b>Administrator Control Panel</b>\n\nSelect an action below:",
@@ -696,7 +798,7 @@ def handle_cancel_action(call):
         reply_markup=get_admin_panel_markup()
     )
 
-# ----------------- ADMIN INPUT LISTENERS (MAILING & MEDIA) -----------------
+# ----------------- ADMIN INPUT LISTENERS (MAILING, MEDIA, BUTTONS) -----------------
 @bot.message_handler(content_types=['text', 'photo', 'video', 'animation', 'document', 'audio', 'voice', 'sticker'], func=lambda msg: msg.from_user.id in admin_state)
 def process_admin_inputs(message):
     user_id = message.from_user.id
@@ -707,7 +809,7 @@ def process_admin_inputs(message):
         bot.reply_to(message, "❌ <b>Action Cancelled.</b>", reply_markup=get_admin_panel_markup())
         return
 
-    # A. Handle Broadcast Mailing (Direct Forward & Copy)
+    # A. Mailing Broadcast
     if state == "waiting_broadcast":
         admin_state.pop(user_id, None)
         status_msg = bot.reply_to(message, "⏳ <b>Broadcasting message to all users and groups...</b>")
@@ -734,7 +836,20 @@ def process_admin_inputs(message):
         bot.edit_message_text(report, chat_id=message.chat.id, message_id=status_msg.message_id)
         return
 
-    # B. Handle Media Update
+    # B. Set Button Name
+    if state and state.startswith("waiting_btn_name_"):
+        cid = state.replace("waiting_btn_name_", "")
+        new_name = message.text.strip()
+        for ch in db.get("channels", []):
+            if ch["id"] == cid:
+                ch["name"] = new_name
+                break
+        save_db(db)
+        admin_state.pop(user_id, None)
+        bot.reply_to(message, f"✅ <b>Success:</b> Button text updated to: <b>{new_name}</b>", reply_markup=get_admin_panel_markup())
+        return
+
+    # C. Set Media
     if state and state.startswith("waiting_media_"):
         action = state.replace("waiting_media_", "")
         m_type = "photo"
@@ -780,7 +895,7 @@ def handle_start(message):
     bot.reply_to(message, welcome_text)
 
 # ----------------- /ub COMMAND -----------------
-@bot.message_handler(commands=['ub', 'unban', 'm'])
+@bot.message_handler(commands=['ub', 'unban'])
 def handle_unban_request(message):
     if not check_access(message):
         return
@@ -794,8 +909,10 @@ def handle_unban_request(message):
         bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/ub username</code>\n<b>Example:</b> <code>/ub gt5available</code>")
         return
 
+    ig_link = get_ig_link(username)
+
     if username in db.get("unban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>@{username}</b> is already being monitored.")
+        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
         return
 
     status = get_instagram_details(username)
@@ -803,7 +920,7 @@ def handle_unban_request(message):
         f_by = format_count(status["followers"])
         f_to = format_count(status["following"])
         caption = (
-            f"ℹ️ <b>@{username}</b> is already active.\n\n"
+            f"ℹ️ <b>{ig_link}</b> is already active.\n\n"
             f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
             f"👤 Requested by: {user_mention}"
         )
@@ -828,12 +945,12 @@ def handle_unban_request(message):
 
     caption = (
         "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
-        f"Target: <b>@{username}</b>\n"
+        f"Target: <b>{ig_link}</b>\n"
         "You'll be notified as soon as the account is active.\n\n"
         f"👤 Requested by: {user_mention}"
     )
 
-    send_custom_media(message.chat.id, "m", caption, reply_to=message.message_id)
+    send_custom_media(message.chat.id, "ub_req", caption, reply_to=message.message_id)
 
 # ----------------- /b COMMAND -----------------
 @bot.message_handler(commands=['b', 'ban'])
@@ -850,14 +967,16 @@ def handle_ban_request(message):
         bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/b username</code>\n<b>Example:</b> <code>/b gt5available</code>")
         return
 
+    ig_link = get_ig_link(username)
+
     if username in db.get("ban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>@{username}</b> is already being monitored.")
+        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
         return
 
     status = get_instagram_details(username)
     if status["active"] is False:
         caption = (
-            f"ℹ️ <b>@{username}</b> is already banned or unavailable.\n\n"
+            f"ℹ️ <b>{ig_link}</b> is already banned or unavailable.\n\n"
             f"👤 Requested by: {user_mention}"
         )
         send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
@@ -885,13 +1004,13 @@ def handle_ban_request(message):
 
     caption = (
         "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
-        f"Target: <b>@{username}</b>\n"
+        f"Target: <b>{ig_link}</b>\n"
         f"Current Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
         "You'll be notified as soon as the account is banned.\n\n"
         f"👤 Requested by: {user_mention}"
     )
 
-    send_custom_media(message.chat.id, "m", caption, reply_to=message.message_id)
+    send_custom_media(message.chat.id, "b_req", caption, reply_to=message.message_id)
 
 # ----------------- /status COMMAND -----------------
 @bot.message_handler(commands=['status', 's'])
@@ -912,7 +1031,8 @@ def handle_status(message):
         for u, d in unbans.items():
             t = format_time_taken(time.time() - d["start_time"])
             mention = get_user_mention(d.get("user_id"), d.get("user_name"))
-            lines.append(f"• <b>@{u}</b> (Elapsed: <code>{t}</code>) — {mention}")
+            ig_link = get_ig_link(u)
+            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>) — {mention}")
 
     if bans:
         lines.append("\n<b>Awaiting Ban (/b):</b>")
@@ -920,7 +1040,8 @@ def handle_status(message):
             t = format_time_taken(time.time() - d["start_time"])
             f_by = format_count(d.get("followers", "N/A"))
             mention = get_user_mention(d.get("user_id"), d.get("user_name"))
-            lines.append(f"• <b>@{u}</b> (Followers: <code>{f_by}</code> | Elapsed: <code>{t}</code>) — {mention}")
+            ig_link = get_ig_link(u)
+            lines.append(f"• <b>{ig_link}</b> (Followers: <code>{f_by}</code> | Elapsed: <code>{t}</code>) — {mention}")
 
     bot.reply_to(message, "\n".join(lines))
 
@@ -948,5 +1069,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("Dual Tracker Bot with Full Admin Suite is active...")
+    print("Dual Tracker Bot is active...")
     run_bot_polling()

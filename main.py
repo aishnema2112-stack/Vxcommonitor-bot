@@ -6,12 +6,13 @@ import re
 import random
 import threading
 import io
-import base64
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 from telebot import types
 from datetime import datetime, timezone, timedelta
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)
@@ -33,7 +34,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"Dual Monitor Bot is Active 24/7")
+        self.wfile.write(b"Dual Monitor Bot is Active 24/7 on Neon Postgres")
 
     def log_message(self, format, *args):
         return
@@ -49,81 +50,46 @@ def run_server():
 
 threading.Thread(target=run_server, daemon=True).start()
 
-# ----------------- CONFIGURATION -----------------
+# ----------------- CONFIGURATION & POSTGRESQL -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://neondb_owner:npg_7ov9OuACpHDI@ep-little-pond-aybs8spz-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require"
+)
 
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
-AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
 CHECK_INTERVAL_SECONDS = 10
-DB_FILE = "dual_tracker_db.json"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
 admin_state = {}
 user_message_history = {}
 
-# ----------------- GITHUB DATABASE SYNC ENGINE -----------------
-def load_from_github():
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return False
+# ----------------- NEON CLOUD DATABASE ENGINE -----------------
+def get_db_connection():
+    # Strip channel_binding if present to ensure maximum driver compatibility
+    clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
+    return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
+
+def init_postgres():
     try:
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
-        res = requests.get(api_url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            file_data = res.json()
-            if "content" in file_data:
-                decoded = base64.b64decode(file_data["content"])
-                with open(DB_FILE, "wb") as f:
-                    f.write(decoded)
-                print("✅ Successfully synced database from GitHub!", flush=True)
-                return True
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_storage (
+                key VARCHAR(50) PRIMARY KEY,
+                data JSONB NOT NULL
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Neon PostgreSQL Database Initialized Successfully!", flush=True)
     except Exception as e:
-        print(f"GitHub Load Error: {e}", flush=True)
-    return False
+        print(f"❌ Database Init Error: {e}", flush=True)
 
-def sync_to_github():
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return
-    try:
-        if not os.path.exists(DB_FILE):
-            return
-        with open(DB_FILE, "rb") as f:
-            content_bytes = f.read()
-        content_encoded = base64.b64encode(content_bytes).decode("utf-8")
+init_postgres()
 
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
-        
-        get_res = requests.get(api_url, headers=headers, timeout=10)
-        sha = None
-        if get_res.status_code == 200:
-            sha = get_res.json().get("sha")
-
-        data_payload = {
-            "message": "Auto-update database [skip ci]",
-            "content": content_encoded,
-            "branch": "main"
-        }
-        if sha:
-            data_payload["sha"] = sha
-
-        put_res = requests.put(api_url, headers=headers, json=data_payload, timeout=10)
-        if put_res.status_code not in [200, 201]:
-            data_payload["branch"] = "master"
-            requests.put(api_url, headers=headers, json=data_payload, timeout=10)
-    except Exception as e:
-        print(f"GitHub Sync Error: {e}", flush=True)
-
-# ----------------- DATABASE LOADER & SAVER -----------------
 def get_default_db_data():
     return {
         "_id": "global_config",
@@ -182,27 +148,45 @@ def get_default_db_data():
 
 def load_db():
     default_data = get_default_db_data()
-    load_from_github()
-    
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for k, v in default_data.items():
-                    if k not in data:
-                        data[k] = v
-                return data
-        except Exception:
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT data FROM bot_storage WHERE key = 'main_config';")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if row and row[0]:
+            data = row[0]
+            if isinstance(data, str):
+                data = json.loads(data)
+            for k, v in default_data.items():
+                if k not in data:
+                    data[k] = v
+            return data
+        else:
+            save_db(default_data)
             return default_data
-    return default_data
+    except Exception as e:
+        print(f"Neon Load Error: {e}", flush=True)
+        return default_data
 
 def save_db(data):
     try:
-        with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, default=str)
-        sync_to_github()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        json_payload = json.dumps(data, default=str)
+        cur.execute("""
+            INSERT INTO bot_storage (key, data)
+            VALUES ('main_config', %s)
+            ON CONFLICT (key) DO UPDATE
+            SET data = EXCLUDED.data;
+        """, (json_payload,))
+        conn.commit()
+        cur.close()
+        conn.close()
     except Exception as e:
-        print(f"Local DB Error: {e}", flush=True)
+        print(f"Neon Save Error: {e}", flush=True)
 
 db = load_db()
 
@@ -439,7 +423,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ROBUST EMBED-BASED SCRAPER ENGINE -----------------
+# ----------------- ROBUST EMBED SCRAPER ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     headers = {
@@ -462,12 +446,6 @@ def check_single_account(username):
         pass
 
     return {"active": False, "followers": 0, "following": 0}
-
-def check_instagram_batch(users_batch):
-    results = {}
-    for user in users_batch:
-        results[user] = check_single_account(user)
-    return results
 
 def get_instagram_details(username):
     return check_single_account(username)
@@ -521,7 +499,6 @@ def monitor_loop():
                 for user in usernames:
                     st = check_single_account(user)
                     if st["active"] is False:
-                        # Re-verify once to prevent false positives
                         time.sleep(2)
                         recheck = check_single_account(user)
                         if recheck["active"] is False:
@@ -659,7 +636,6 @@ def handle_admin_callbacks(call):
         ub_count = len(db.get("unban_monitors", {}))
         b_count = len(db.get("ban_monitors", {}))
         total_tracked = db.get("stats", {}).get("total_monitored", 0) + ub_count + b_count
-        db_mode = "GitHub JSON Auto-Sync 📁🔄"
 
         stats_text = (
             "📊 <b>Bot Real-time Analytics Dashboard</b>\n\n"
@@ -668,8 +644,8 @@ def handle_admin_callbacks(call):
             f"⚡ <b>Awaiting Unban (/ub):</b> <code>{ub_count}</code>\n"
             f"🚫 <b>Awaiting Ban (/b):</b> <code>{b_count}</code>\n"
             f"📈 <b>Total Accounts Tracked:</b> <code>{total_tracked:,}</code>\n"
-            f"💾 <b>Database Engine:</b> <code>{db_mode}</code>\n"
-            f"🕒 <b>Server Status:</b> <code>Online 24/7 (Render)</code>"
+            "💾 <b>Database Engine:</b> <code>Neon Serverless Postgres ⚡</code>\n"
+            "🕒 <b>Server Status:</b> <code>Online 24/7 (Render)</code>"
         )
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(

@@ -3,6 +3,8 @@ import sys
 import time
 import json
 import re
+import random
+import string
 import threading
 import io
 import base64
@@ -50,14 +52,14 @@ threading.Thread(target=run_server, daemon=True).start()
 
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
-INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "70229745656:sLSyRu4K1KDgPw:11:AYg1H4LDg5LXUI5a3y8ebDWyAoexZ0jKncnz-WcYvA")
+INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "")
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 AUTHORIZED_OFFICIAL_GROUPS = ["comchater"]
-CHECK_INTERVAL_SECONDS = 15
+CHECK_INTERVAL_SECONDS = 10
 DB_FILE = "dual_tracker_db.json"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
@@ -256,7 +258,7 @@ def register_user(user, chat_id=None):
             )
             for adm in db.get("admins", []):
                 try:
-                    bot.send_message(adm, alert_text, protect_content=True)
+                    bot.send_message(adm, alert_text)
                 except Exception:
                     pass
     else:
@@ -337,10 +339,9 @@ def extract_username(message):
 # ----------------- MEDIA SENDER ENGINE -----------------
 def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
     media_data = db.get("media", {}).get(key)
-    is_protected = True if chat_id > 0 else False
 
     if not media_data:
-        return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to, reply_markup=reply_markup, protect_content=is_protected)
+        return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
 
     if isinstance(media_data, str):
         m_type = "animation" if media_data.endswith(".gif") else "photo"
@@ -351,16 +352,16 @@ def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
 
     try:
         if m_type == "video":
-            return bot.send_video(chat_id=chat_id, video=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup, protect_content=is_protected)
+            return bot.send_video(chat_id=chat_id, video=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
         elif m_type == "animation":
-            return bot.send_animation(chat_id=chat_id, animation=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup, protect_content=is_protected)
+            return bot.send_animation(chat_id=chat_id, animation=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
         elif m_type == "photo":
-            return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup, protect_content=is_protected)
+            return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
         else:
-            return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup, protect_content=is_protected)
+            return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
     except Exception as e:
         print(f"Media fallback error: {e}", flush=True)
-        return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to, reply_markup=reply_markup, protect_content=is_protected)
+        return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
 
 # ----------------- STRICT FORCE JOIN VERIFICATION -----------------
 def get_missing_channels(user_id):
@@ -408,7 +409,7 @@ def check_access(message):
             "Our servers are currently undergoing scheduled upgrades.\n"
             "All monitoring requests are temporarily paused."
         )
-        bot.reply_to(message, maintenance_msg, protect_content=(chat.id > 0))
+        bot.reply_to(message, maintenance_msg)
         return False
 
     if chat.type == "private":
@@ -441,88 +442,92 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ANTI-UNAUTHORIZED GROUP PROTECTION -----------------
-@bot.message_handler(content_types=['new_chat_members'])
-def handle_new_chat_members(message):
-    for member in message.new_chat_members:
-        if member.id == bot.get_me().id:
-            chat_username = (message.chat.username or "").lower()
-            if chat_username in AUTHORIZED_OFFICIAL_GROUPS:
-                try:
-                    bot.send_message(message.chat.id, "<b>Bot is active in @Comchater!</b>")
-                except Exception:
-                    pass
-                return
+# ----------------- ADVANCED BULK ROUTE SCRAPER (DOST'S LOGIC) -----------------
+def generate_lsd():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=14))
 
-            if is_admin_or_owner(message.from_user.id):
-                return
+def generate_device_headers(lsd):
+    ua_type = random.choice(['android', 'iphone', 'windows', 'mac'])
+    headers = {
+        "X-FB-LSD": lsd,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "Connection": "keep-alive",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-IG-App-ID": "936619743392459"
+    }
 
-            try:
-                bot.send_message(message.chat.id, "<b>Unauthorized Group</b>\n\nThis bot only works inside @Comchater.\nLeaving now...")
-                bot.leave_chat(message.chat.id)
-            except Exception:
-                pass
+    if ua_type == 'android':
+        version = random.choice(['11', '12', '13', '14'])
+        device = random.choice(['SM-G991B', 'SM-A205U', 'Pixel 6', 'Redmi Note 10'])
+        chrome_major = random.randint(110, 124)
+        headers["User-Agent"] = f"Mozilla/5.0 (Linux; Android {version}; {device}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_major}.0.0.0 Mobile Safari/537.36"
+    elif ua_type == 'iphone':
+        headers["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    else:
+        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# ----------------- INSTAGRAM MULTI-GATEWAY ENGINE -----------------
-def get_instagram_details(username):
-    username = username.strip().lower().replace("@", "")
-    ds_user_id = INSTAGRAM_SESSION_ID.split(":")[0] if ":" in INSTAGRAM_SESSION_ID else ""
+    return headers
+
+def check_instagram_batch(users_batch):
+    if not users_batch:
+        return {}
+
+    lsd = generate_lsd()
+    payload = ""
+    for i, user in enumerate(users_batch):
+        payload += f"route_urls[{i}]=/{user}/&"
+    payload += f"lsd={lsd}"
+
+    headers = generate_device_headers(lsd)
+    results = {}
 
     try:
-        web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 324.0.0.18.113",
-            "x-ig-app-id": "936619743392459",
-            "Referer": f"https://www.instagram.com/{username}/",
-            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};"
-        }
-        res = requests.get(web_url, headers=headers, timeout=5)
+        req = requests.post(
+            "https://www.instagram.com/ajax/bulk-route-definitions/",
+            data=payload,
+            headers=headers,
+            timeout=8
+        )
+        response_text = req.text
+
+        for user in users_batch:
+            key_banned = f'"/{user}/":{{"error":true'
+            key_active = f'"/{user}/":{{"error":false'
+
+            if key_banned in response_text:
+                results[user] = {"active": False, "followers": "N/A", "following": "N/A"}
+            elif key_active in response_text:
+                results[user] = {"active": True, "followers": "N/A", "following": "N/A"}
+            else:
+                # Fallback to single web check
+                results[user] = check_single_account(user)
+    except Exception:
+        for user in users_batch:
+            results[user] = check_single_account(user)
+
+    return results
+
+def check_single_account(username):
+    try:
+        lsd = generate_lsd()
+        headers = generate_device_headers(lsd)
+        res = requests.get(f"https://www.instagram.com/{username}/?__a=1&__d=dis", headers=headers, timeout=5)
         if res.status_code == 200:
-            data = res.json().get("data", {}).get("user")
-            if data and "username" in data:
-                return {
-                    "active": True,
-                    "followers": data.get("edge_followed_by", {}).get("count", 0),
-                    "following": data.get("edge_follow", {}).get("count", 0)
-                }
-            return {"active": False, "followers": 0, "following": 0}
+            return {"active": True, "followers": "N/A", "following": "N/A"}
         elif res.status_code == 404:
             return {"active": False, "followers": 0, "following": 0}
     except Exception:
         pass
-
-    try:
-        oembed_url = f"https://api.instagram.com/oembed/?url=https://www.instagram.com/{username}/"
-        res_o = requests.get(oembed_url, timeout=5)
-        if res_o.status_code == 200:
-            return {"active": True, "followers": "N/A", "following": "N/A"}
-        elif res_o.status_code == 404:
-            return {"active": False, "followers": 0, "following": 0}
-    except Exception:
-        pass
-
-    try:
-        app_url = f"https://i.instagram.com/api/v1/users/{username}/usernameinfo/"
-        app_headers = {
-            "User-Agent": "Instagram 278.0.0.19.115 Android (33/13; 440dpi; 1080x2400; Xiaomi; sweet; en_US; 458229237)",
-            "Cookie": f"sessionid={INSTAGRAM_SESSION_ID}; ds_user_id={ds_user_id};",
-            "X-IG-App-ID": "936619743392459"
-        }
-        res_app = requests.get(app_url, headers=app_headers, timeout=5)
-        if res_app.status_code == 200:
-            u_info = res_app.json().get("user", {})
-            if u_info and "username" in u_info:
-                return {
-                    "active": True,
-                    "followers": u_info.get("follower_count", 0),
-                    "following": u_info.get("following_count", 0)
-                }
-        elif res_app.status_code == 404:
-            return {"active": False, "followers": 0, "following": 0}
-    except Exception:
-        pass
-
     return {"active": False, "followers": 0, "following": 0}
+
+def get_instagram_details(username):
+    res = check_instagram_batch([username])
+    return res.get(username, {"active": False, "followers": 0, "following": 0})
 
 # ----------------- BACKGROUND MONITOR LOOP -----------------
 def monitor_loop():
@@ -530,70 +535,89 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            unban_list = list(db.get("unban_monitors", {}).items())
-            for username, info in unban_list:
-                status = get_instagram_details(username)
-                if status["active"] is True:
-                    elapsed = time.time() - info.get("start_time", time.time())
-                    time_str = format_time_taken(elapsed)
-                    f_by = format_count(status["followers"])
-                    f_to = format_count(status["following"])
-                    user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
-                    ig_link = get_ig_link(username)
+            # Process Unban Monitors in batches of 5
+            unban_items = list(db.get("unban_monitors", {}).items())
+            if unban_items:
+                usernames = [u for u, _ in unban_items]
+                batches = [usernames[i:i + 5] for i in range(0, len(usernames), 5)]
 
-                    caption = (
-                        "🎉 <b>Instagram Account Recovered</b>\n\n"
-                        f"Target: <b>{ig_link}</b>\n"
-                        f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
-                        f"Time Taken: <code>{time_str}</code>\n"
-                        f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
-                        f"👤 Requested by: {user_mention}"
-                    )
+                for batch in batches:
+                    batch_res = check_instagram_batch(batch)
+                    for user in batch:
+                        st = batch_res.get(user, {"active": False})
+                        if st["active"] is True:
+                            info = db["unban_monitors"].get(user)
+                            if not info:
+                                continue
+                            elapsed = time.time() - info.get("start_time", time.time())
+                            time_str = format_time_taken(elapsed)
+                            f_by = format_count(st["followers"])
+                            f_to = format_count(st["following"])
+                            user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                            ig_link = get_ig_link(user)
 
-                    sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
-                    try:
-                        bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
-                    except Exception:
-                        pass
+                            caption = (
+                                "🎉 <b>Instagram Account Recovered</b>\n\n"
+                                f"Target: <b>{ig_link}</b>\n"
+                                f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                                f"Time Taken: <code>{time_str}</code>\n"
+                                f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
+                                f"👤 Requested by: {user_mention}"
+                            )
 
-                    del db["unban_monitors"][username]
-                    save_db(db)
+                            sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
+                            try:
+                                bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
+                            except Exception:
+                                pass
 
-                time.sleep(2)
+                            del db["unban_monitors"][user]
+                            save_db(db)
+                    time.sleep(1)
 
-            ban_list = list(db.get("ban_monitors", {}).items())
-            for username, info in ban_list:
-                status = get_instagram_details(username)
-                if status["active"] is False:
-                    time.sleep(3)
-                    recheck = get_instagram_details(username)
-                    if recheck["active"] is False:
-                        elapsed = time.time() - info.get("start_time", time.time())
-                        time_str = format_time_taken(elapsed)
-                        f_by = format_count(info.get("followers", "N/A"))
-                        f_to = format_count(info.get("following", "N/A"))
-                        user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
-                        ig_link = get_ig_link(username)
+            # Process Ban Monitors in batches of 5
+            ban_items = list(db.get("ban_monitors", {}).items())
+            if ban_items:
+                usernames = [u for u, _ in ban_items]
+                batches = [usernames[i:i + 5] for i in range(0, len(usernames), 5)]
 
-                        caption = (
-                            "🚫 <b>Instagram Account Banned</b>\n\n"
-                            f"Target: <b>{ig_link}</b>\n"
-                            f"Previous Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
-                            f"Time Taken: <code>{time_str}</code>\n"
-                            f"Banned at: <code>{get_current_time_str()}</code>\n\n"
-                            f"👤 Requested by: {user_mention}"
-                        )
+                for batch in batches:
+                    batch_res = check_instagram_batch(batch)
+                    for user in batch:
+                        st = batch_res.get(user, {"active": True})
+                        if st["active"] is False:
+                            # Re-verify once to prevent false positives
+                            time.sleep(2)
+                            recheck = get_instagram_details(user)
+                            if recheck["active"] is False:
+                                info = db["ban_monitors"].get(user)
+                                if not info:
+                                    continue
+                                elapsed = time.time() - info.get("start_time", time.time())
+                                time_str = format_time_taken(elapsed)
+                                f_by = format_count(info.get("followers", "N/A"))
+                                f_to = format_count(info.get("following", "N/A"))
+                                user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                                ig_link = get_ig_link(user)
 
-                        sent_msg = send_custom_media(info["chat_id"], "b_done", caption)
-                        try:
-                            bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
-                        except Exception:
-                            pass
+                                caption = (
+                                    "🚫 <b>Instagram Account Banned</b>\n\n"
+                                    f"Target: <b>{ig_link}</b>\n"
+                                    f"Previous Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                                    f"Time Taken: <code>{time_str}</code>\n"
+                                    f"Banned at: <code>{get_current_time_str()}</code>\n\n"
+                                    f"👤 Requested by: {user_mention}"
+                                )
 
-                        del db["ban_monitors"][username]
-                        save_db(db)
+                                sent_msg = send_custom_media(info["chat_id"], "b_done", caption)
+                                try:
+                                    bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
+                                except Exception:
+                                    pass
 
-                time.sleep(2)
+                                del db["ban_monitors"][user]
+                                save_db(db)
+                    time.sleep(1)
 
             time.sleep(CHECK_INTERVAL_SECONDS)
         except Exception as e:
@@ -1078,7 +1102,7 @@ def handle_ban_request(message):
     caption = (
         "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
         f"Target: <b>{ig_link}</b>\n"
-        f"Current Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+        f"Current Status: <code>Active</code>\n"
         "You'll be notified as soon as the account is banned.\n\n"
         f"👤 Requested by: {user_mention}"
     )
@@ -1113,7 +1137,7 @@ def handle_status(message):
             f_by = format_count(d.get("followers", "N/A"))
             mention = get_user_mention(d.get("user_id"), d.get("user_name"))
             ig_link = get_ig_link(u)
-            lines.append(f"• <b>{ig_link}</b> (Followers: <code>{f_by}</code> | Elapsed: <code>{t}</code>) — {mention}")
+            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>) — {mention}")
 
     bot.reply_to(message, "\n".join(lines))
 

@@ -4,7 +4,6 @@ import time
 import json
 import re
 import random
-import string
 import threading
 import io
 import base64
@@ -52,8 +51,6 @@ threading.Thread(target=run_server, daemon=True).start()
 
 # ----------------- CONFIGURATION -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
-INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "")
-
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 
@@ -442,92 +439,38 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ADVANCED BULK ROUTE SCRAPER (DOST'S LOGIC) -----------------
-def generate_lsd():
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=14))
-
-def generate_device_headers(lsd):
-    ua_type = random.choice(['android', 'iphone', 'windows', 'mac'])
-    headers = {
-        "X-FB-LSD": lsd,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "Connection": "keep-alive",
-        "X-Requested-With": "XMLHttpRequest",
-        "X-IG-App-ID": "936619743392459"
-    }
-
-    if ua_type == 'android':
-        version = random.choice(['11', '12', '13', '14'])
-        device = random.choice(['SM-G991B', 'SM-A205U', 'Pixel 6', 'Redmi Note 10'])
-        chrome_major = random.randint(110, 124)
-        headers["User-Agent"] = f"Mozilla/5.0 (Linux; Android {version}; {device}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_major}.0.0.0 Mobile Safari/537.36"
-    elif ua_type == 'iphone':
-        headers["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-    else:
-        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-    return headers
-
-def check_instagram_batch(users_batch):
-    if not users_batch:
-        return {}
-
-    lsd = generate_lsd()
-    payload = ""
-    for i, user in enumerate(users_batch):
-        payload += f"route_urls[{i}]=/{user}/&"
-    payload += f"lsd={lsd}"
-
-    headers = generate_device_headers(lsd)
-    results = {}
-
-    try:
-        req = requests.post(
-            "https://www.instagram.com/ajax/bulk-route-definitions/",
-            data=payload,
-            headers=headers,
-            timeout=8
-        )
-        response_text = req.text
-
-        for user in users_batch:
-            key_banned = f'"/{user}/":{{"error":true'
-            key_active = f'"/{user}/":{{"error":false'
-
-            if key_banned in response_text:
-                results[user] = {"active": False, "followers": "N/A", "following": "N/A"}
-            elif key_active in response_text:
-                results[user] = {"active": True, "followers": "N/A", "following": "N/A"}
-            else:
-                # Fallback to single web check
-                results[user] = check_single_account(user)
-    except Exception:
-        for user in users_batch:
-            results[user] = check_single_account(user)
-
-    return results
-
+# ----------------- ROBUST EMBED-BASED SCRAPER ENGINE -----------------
 def check_single_account(username):
+    username = username.strip().lower().replace("@", "")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
     try:
-        lsd = generate_lsd()
-        headers = generate_device_headers(lsd)
-        res = requests.get(f"https://www.instagram.com/{username}/?__a=1&__d=dis", headers=headers, timeout=5)
+        url = f"https://www.instagram.com/{username}/embed/"
+        res = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
+        
         if res.status_code == 200:
+            text_lower = res.text.lower()
+            if "unavailable" in text_lower or "page not found" in text_lower or "link may be broken" in text_lower:
+                return {"active": False, "followers": 0, "following": 0}
             return {"active": True, "followers": "N/A", "following": "N/A"}
         elif res.status_code == 404:
             return {"active": False, "followers": 0, "following": 0}
     except Exception:
         pass
+
     return {"active": False, "followers": 0, "following": 0}
 
+def check_instagram_batch(users_batch):
+    results = {}
+    for user in users_batch:
+        results[user] = check_single_account(user)
+    return results
+
 def get_instagram_details(username):
-    res = check_instagram_batch([username])
-    return res.get(username, {"active": False, "followers": 0, "following": 0})
+    return check_single_account(username)
 
 # ----------------- BACKGROUND MONITOR LOOP -----------------
 def monitor_loop():
@@ -535,88 +478,80 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # Process Unban Monitors in batches of 5
+            # Process Unban Monitors
             unban_items = list(db.get("unban_monitors", {}).items())
             if unban_items:
                 usernames = [u for u, _ in unban_items]
-                batches = [usernames[i:i + 5] for i in range(0, len(usernames), 5)]
+                for user in usernames:
+                    st = check_single_account(user)
+                    if st["active"] is True:
+                        info = db["unban_monitors"].get(user)
+                        if not info:
+                            continue
+                        elapsed = time.time() - info.get("start_time", time.time())
+                        time_str = format_time_taken(elapsed)
+                        f_by = format_count(st["followers"])
+                        f_to = format_count(st["following"])
+                        user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                        ig_link = get_ig_link(user)
 
-                for batch in batches:
-                    batch_res = check_instagram_batch(batch)
-                    for user in batch:
-                        st = batch_res.get(user, {"active": False})
-                        if st["active"] is True:
-                            info = db["unban_monitors"].get(user)
+                        caption = (
+                            "🎉 <b>Instagram Account Recovered</b>\n\n"
+                            f"Target: <b>{ig_link}</b>\n"
+                            f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                            f"Time Taken: <code>{time_str}</code>\n"
+                            f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
+                            f"👤 Requested by: {user_mention}"
+                        )
+
+                        sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
+                        try:
+                            bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
+                        except Exception:
+                            pass
+
+                        del db["unban_monitors"][user]
+                        save_db(db)
+                    time.sleep(1)
+
+            # Process Ban Monitors
+            ban_items = list(db.get("ban_monitors", {}).items())
+            if ban_items:
+                usernames = [u for u, _ in ban_items]
+                for user in usernames:
+                    st = check_single_account(user)
+                    if st["active"] is False:
+                        # Re-verify once to prevent false positives
+                        time.sleep(2)
+                        recheck = check_single_account(user)
+                        if recheck["active"] is False:
+                            info = db["ban_monitors"].get(user)
                             if not info:
                                 continue
                             elapsed = time.time() - info.get("start_time", time.time())
                             time_str = format_time_taken(elapsed)
-                            f_by = format_count(st["followers"])
-                            f_to = format_count(st["following"])
+                            f_by = format_count(info.get("followers", "N/A"))
+                            f_to = format_count(info.get("following", "N/A"))
                             user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
                             ig_link = get_ig_link(user)
 
                             caption = (
-                                "🎉 <b>Instagram Account Recovered</b>\n\n"
+                                "🚫 <b>Instagram Account Banned</b>\n\n"
                                 f"Target: <b>{ig_link}</b>\n"
-                                f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                                f"Previous Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
                                 f"Time Taken: <code>{time_str}</code>\n"
-                                f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
+                                f"Banned at: <code>{get_current_time_str()}</code>\n\n"
                                 f"👤 Requested by: {user_mention}"
                             )
 
-                            sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
+                            sent_msg = send_custom_media(info["chat_id"], "b_done", caption)
                             try:
                                 bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
                             except Exception:
                                 pass
 
-                            del db["unban_monitors"][user]
+                            del db["ban_monitors"][user]
                             save_db(db)
-                    time.sleep(1)
-
-            # Process Ban Monitors in batches of 5
-            ban_items = list(db.get("ban_monitors", {}).items())
-            if ban_items:
-                usernames = [u for u, _ in ban_items]
-                batches = [usernames[i:i + 5] for i in range(0, len(usernames), 5)]
-
-                for batch in batches:
-                    batch_res = check_instagram_batch(batch)
-                    for user in batch:
-                        st = batch_res.get(user, {"active": True})
-                        if st["active"] is False:
-                            # Re-verify once to prevent false positives
-                            time.sleep(2)
-                            recheck = get_instagram_details(user)
-                            if recheck["active"] is False:
-                                info = db["ban_monitors"].get(user)
-                                if not info:
-                                    continue
-                                elapsed = time.time() - info.get("start_time", time.time())
-                                time_str = format_time_taken(elapsed)
-                                f_by = format_count(info.get("followers", "N/A"))
-                                f_to = format_count(info.get("following", "N/A"))
-                                user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
-                                ig_link = get_ig_link(user)
-
-                                caption = (
-                                    "🚫 <b>Instagram Account Banned</b>\n\n"
-                                    f"Target: <b>{ig_link}</b>\n"
-                                    f"Previous Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
-                                    f"Time Taken: <code>{time_str}</code>\n"
-                                    f"Banned at: <code>{get_current_time_str()}</code>\n\n"
-                                    f"👤 Requested by: {user_mention}"
-                                )
-
-                                sent_msg = send_custom_media(info["chat_id"], "b_done", caption)
-                                try:
-                                    bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
-                                except Exception:
-                                    pass
-
-                                del db["ban_monitors"][user]
-                                save_db(db)
                     time.sleep(1)
 
             time.sleep(CHECK_INTERVAL_SECONDS)
@@ -1011,11 +946,8 @@ def handle_unban_request(message):
 
     status = get_instagram_details(username)
     if status["active"] is True:
-        f_by = format_count(status["followers"])
-        f_to = format_count(status["following"])
         caption = (
             f"ℹ️ <b>{ig_link}</b> is already active.\n\n"
-            f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
             f"👤 Requested by: {user_mention}"
         )
         sent = send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
@@ -1079,8 +1011,6 @@ def handle_ban_request(message):
             auto_delete_after_delay(message.chat.id, sent.message_id, delay_seconds=300)
         return
 
-    f_by = format_count(status["followers"])
-    f_to = format_count(status["following"])
     req_time = get_current_time_str()
     req_date = get_current_date_str()
 
@@ -1134,7 +1064,6 @@ def handle_status(message):
         lines.append("\n<b>Awaiting Ban (/b):</b>")
         for u, d in bans.items():
             t = format_time_taken(time.time() - d["start_time"])
-            f_by = format_count(d.get("followers", "N/A"))
             mention = get_user_mention(d.get("user_id"), d.get("user_name"))
             ig_link = get_ig_link(u)
             lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>) — {mention}")

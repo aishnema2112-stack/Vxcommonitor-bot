@@ -10,8 +10,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 from telebot import types
 from datetime import datetime, timezone, timedelta
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 
 # Unbuffered stdout for real-time Render logs
 sys.stdout.reconfigure(line_buffering=True)
@@ -68,24 +68,21 @@ db_lock = threading.Lock()
 admin_state = {}
 user_message_history = {}
 
-# ----------------- NEON POSTGRESQL ENGINE -----------------
+# ----------------- NEON POSTGRESQL ENGINE (PSYCOPG v3) -----------------
 def get_db_connection():
     clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
-    return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
+    return psycopg.connect(clean_url, autocommit=True)
 
 def init_postgres():
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_storage (
-                key VARCHAR(50) PRIMARY KEY,
-                data JSONB NOT NULL
-            );
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_storage (
+                        key VARCHAR(50) PRIMARY KEY,
+                        data JSONB NOT NULL
+                    );
+                """)
         print("[DATABASE] Neon PostgreSQL Schema Verified & Initialized!", flush=True)
     except Exception as e:
         print(f"[DATABASE ERROR] Init failed: {e}", flush=True)
@@ -128,12 +125,10 @@ def load_db():
     default_data = get_default_db_data()
     with db_lock:
         try:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT data FROM bot_storage WHERE key = 'main_config';")
-            row = cur.fetchone()
-            cur.close()
-            conn.close()
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT data FROM bot_storage WHERE key = 'main_config';")
+                    row = cur.fetchone()
             
             if row and row[0]:
                 data = row[0]
@@ -153,18 +148,15 @@ def load_db():
 def save_db(data):
     with db_lock:
         try:
-            conn = get_db_connection()
-            cur = conn.cursor()
             json_payload = json.dumps(data, default=str)
-            cur.execute("""
-                INSERT INTO bot_storage (key, data)
-                VALUES ('main_config', %s)
-                ON CONFLICT (key) DO UPDATE
-                SET data = EXCLUDED.data;
-            """, (json_payload,))
-            conn.commit()
-            cur.close()
-            conn.close()
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO bot_storage (key, data)
+                        VALUES ('main_config', %s)
+                        ON CONFLICT (key) DO UPDATE
+                        SET data = EXCLUDED.data;
+                    """, (json_payload,))
         except Exception as e:
             print(f"[DATABASE ERROR] Save failed: {e}", flush=True)
 
@@ -405,14 +397,6 @@ def handle_verify_callback(call):
 
 # ----------------- STRICT 3-STATE SCRAPER ENGINE -----------------
 def check_single_account(username):
-    """
-    Instagram account status checker.
-
-    Returns:
-      ACTIVE  -> HTTP 200 + valid profile fields
-      BANNED  -> HTTP 404 from verified endpoint
-      UNKNOWN -> auth/rate-limit/server/timeout/invalid response
-    """
     username = username.strip().lower().replace("@", "")
 
     if not username:
@@ -429,17 +413,14 @@ def check_single_account(username):
         response = requests.get(url, headers=headers, params=params, timeout=10)
         print(f"[RAPIDAPI] @{username} -> HTTP {response.status_code}", flush=True)
 
-        # ---------------- ACTIVE ----------------
         if response.status_code == 200:
             try:
                 data = response.json()
             except ValueError:
-                print(f"[RAPIDAPI] @{username} -> Invalid JSON", flush=True)
                 return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
             profile = data.get("data", data)
             if not isinstance(profile, dict):
-                print(f"[RAPIDAPI] @{username} -> Invalid profile object", flush=True)
                 return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
             returned_username = profile.get("username")
@@ -453,46 +434,24 @@ def check_single_account(username):
                 and follower_count is not None
                 and following_count is not None
             ):
-                print(f"[RAPIDAPI] @{username} -> ACTIVE | Followers: {follower_count} | Following: {following_count}", flush=True)
                 return {
                     "status": "ACTIVE",
                     "followers": follower_count,
                     "following": following_count
                 }
 
-            print(f"[RAPIDAPI] @{username} -> HTTP 200 but profile validation failed", flush=True)
             return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-        # ---------------- NOT AVAILABLE / BANNED ----------------
         elif response.status_code == 404:
-            print(f"[RAPIDAPI] @{username} -> 404 BANNED/UNAVAILABLE", flush=True)
             return {"status": "BANNED", "followers": 0, "following": 0}
 
-        # ---------------- AUTH / RATE LIMIT ----------------
-        elif response.status_code in (401, 403, 429):
-            print(f"[RAPIDAPI] @{username} -> HTTP {response.status_code} UNKNOWN", flush=True)
+        elif response.status_code in (401, 403, 429) or (500 <= response.status_code <= 599):
             return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-        # ---------------- SERVER ERROR ----------------
-        elif 500 <= response.status_code <= 599:
-            print(f"[RAPIDAPI] @{username} -> HTTP {response.status_code} UNKNOWN", flush=True)
-            return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
-
-        # ---------------- ANY OTHER RESPONSE ----------------
         else:
-            print(f"[RAPIDAPI] @{username} -> Unexpected HTTP {response.status_code}", flush=True)
             return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-    except requests.exceptions.Timeout:
-        print(f"[RAPIDAPI] @{username} -> TIMEOUT / UNKNOWN", flush=True)
-        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
-
-    except requests.exceptions.RequestException as e:
-        print(f"[RAPIDAPI] @{username} -> REQUEST ERROR: {e}", flush=True)
-        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
-
-    except Exception as e:
-        print(f"[RAPIDAPI] @{username} -> UNKNOWN ERROR: {e}", flush=True)
+    except Exception:
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
 def get_instagram_details(username):

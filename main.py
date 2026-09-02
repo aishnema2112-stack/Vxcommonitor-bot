@@ -67,7 +67,6 @@ user_message_history = {}
 
 # ----------------- NEON CLOUD DATABASE ENGINE -----------------
 def get_db_connection():
-    # Strip channel_binding if present to ensure maximum driver compatibility
     clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
     return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
 
@@ -423,24 +422,58 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ROBUST EMBED SCRAPER ENGINE -----------------
+# ----------------- ROBUST INSTAGRAM LIVE SCRAPER ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "x-ig-app-id": "936619743392459",
+        "Origin": "https://www.instagram.com",
+        "Referer": f"https://www.instagram.com/{username}/"
     }
+    
+    # Method 1: Official Web Profile API
     try:
-        url = f"https://www.instagram.com/{username}/embed/"
-        res = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
+        url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
+        res = requests.get(url, headers=headers, timeout=8)
         
         if res.status_code == 200:
-            text_lower = res.text.lower()
-            if "unavailable" in text_lower or "page not found" in text_lower or "link may be broken" in text_lower:
-                return {"active": False, "followers": 0, "following": 0}
-            return {"active": True, "followers": "N/A", "following": "N/A"}
+            data = res.json()
+            user_data = data.get("data", {}).get("user")
+            if user_data:
+                followers = user_data.get("edge_followed_by", {}).get("count", 0)
+                following = user_data.get("edge_follow", {}).get("count", 0)
+                return {
+                    "active": True,
+                    "followers": followers,
+                    "following": following
+                }
         elif res.status_code == 404:
+            return {"active": False, "followers": 0, "following": 0}
+    except Exception:
+        pass
+
+    # Method 2: Meta OpenGraph Fallback
+    try:
+        og_headers = {
+            "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+        }
+        res_og = requests.get(f"https://www.instagram.com/{username}/", headers=og_headers, timeout=8)
+        if res_og.status_code == 200:
+            desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', res_og.text)
+            if desc_match:
+                content = desc_match.group(1)
+                counts = re.findall(r'([\d\.,kKmM]+)\s+(?:Followers|Following)', content)
+                followers = counts[0] if len(counts) > 0 else "N/A"
+                following = counts[1] if len(counts) > 1 else "N/A"
+                return {
+                    "active": True,
+                    "followers": followers,
+                    "following": following
+                }
+        elif res_og.status_code == 404:
             return {"active": False, "followers": 0, "following": 0}
     except Exception:
         pass
@@ -582,7 +615,7 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
     if not is_admin_or_owner(user_id):
@@ -692,24 +725,52 @@ def handle_admin_callbacks(call):
         return
 
     if data == "admin_media":
-        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        media_keys = [
+            ("1️⃣ /ub Req", "ub_req"),
+            ("2️⃣ /ub Done", "ub_done"),
+            ("3️⃣ /b Req", "b_req"),
+            ("4️⃣ /b Done", "b_done"),
+            ("5️⃣ ⚠️ Deny", "deny"),
+            ("6️⃣ 🚪 DM Notice", "dm_notice"),
+            ("7️⃣ 💎 Sub", "subscription"),
+            ("8️⃣ 🔒 Force Join", "force_join")
+        ]
+        for name, key in media_keys:
+            markup.add(
+                types.InlineKeyboardButton(f"✏️ {name}", callback_data=f"set_{key}"),
+                types.InlineKeyboardButton("🗑 Reset", callback_data=f"del_{key}")
+            )
         markup.add(
-            types.InlineKeyboardButton("1️⃣ /ub Request Alert GIF", callback_data="set_ub_req"),
-            types.InlineKeyboardButton("2️⃣ /ub Recovered Alert GIF", callback_data="set_ub_done"),
-            types.InlineKeyboardButton("3️⃣ /b Request Alert GIF", callback_data="set_b_req"),
-            types.InlineKeyboardButton("4️⃣ /b Banned Alert GIF", callback_data="set_b_done"),
-            types.InlineKeyboardButton("5️⃣ ⚠️ Deny Alert GIF", callback_data="set_deny"),
-            types.InlineKeyboardButton("6️⃣ 🚪 DM Notice GIF", callback_data="set_dm_notice"),
-            types.InlineKeyboardButton("7️⃣ 💎 Subscription Alert GIF", callback_data="set_subscription"),
-            types.InlineKeyboardButton("8️⃣ 🔒 Force Join GIF", callback_data="set_force_join"),
+            types.InlineKeyboardButton("🔄 Reset ALL Media to Default", callback_data="reset_all_media"),
             types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
         )
         bot.edit_message_text(
-            "🖼 <b>Manage & Customize Media:</b>\n\nSelect any alert stage below to update its Photo/GIF/Video:",
+            "🖼 <b>Manage & Customize Media:</b>\n\n"
+            "• Tap <b>✏️ Edit</b> to upload new Photo/GIF/Sticker.\n"
+            "• Tap <b>🗑 Reset</b> to restore original default sticker.\n"
+            "• Tap <b>🔄 Reset ALL</b> to restore everything.",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup
         )
+        return
+
+    if data.startswith("del_"):
+        key = data.replace("del_", "")
+        default_media = get_default_db_data()["media"]
+        if key in default_media:
+            db.setdefault("media", {})[key] = default_media[key]
+            save_db(db)
+            bot.answer_callback_query(call.id, f"✅ Reset {key} to default!", show_alert=True)
+        return
+
+    if data == "reset_all_media":
+        default_media = get_default_db_data()["media"]
+        db["media"] = default_media
+        save_db(db)
+        bot.answer_callback_query(call.id, "✅ All media reset to original defaults!", show_alert=True)
+        bot.edit_message_text("🔧 <b>Administrator Control Panel</b>\n\nSelect an action below:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
         return
 
     if data.startswith("set_"):
@@ -718,7 +779,7 @@ def handle_admin_callbacks(call):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
         bot.edit_message_text(
-            f"📸 <b>Send Media for {action}</b>\n\nPlease send the Photo, GIF, or Video right now.",
+            f"📸 <b>Send Media for {action}</b>\n\nPlease send the Photo, GIF, Video, or Sticker right now.",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup
@@ -871,6 +932,9 @@ def process_admin_inputs(message):
         elif message.photo:
             m_type = "photo"
             file_id = message.photo[-1].file_id
+        elif message.sticker:
+            m_type = "photo"
+            file_id = message.sticker.file_id
         elif message.document:
             m_type = "animation" if message.document.mime_type == "video/mp4" else "photo"
             file_id = message.document.file_id
@@ -881,7 +945,7 @@ def process_admin_inputs(message):
             admin_state.pop(user_id, None)
             bot.reply_to(message, f"✅ <b>Success:</b> Media for <code>/{action}</code> updated successfully!", reply_markup=get_admin_panel_markup())
         else:
-            bot.reply_to(message, "❌ Invalid media type. Please send Photo, GIF, or Video.")
+            bot.reply_to(message, "❌ Invalid media type. Please send Photo, GIF, Video, or Sticker.")
 
 @bot.message_handler(commands=['start', 'help', 'h'])
 def handle_start_help(message):

@@ -57,6 +57,10 @@ DATABASE_URL = os.environ.get(
     "postgresql://neondb_owner:npg_7ov9OuACpHDI@ep-little-pond-aybs8spz-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require"
 )
 
+# Aapki Verified RapidAPI Key aur Host
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "337bbf6e6msha0546c6920452d1p1d5c27jsn1fd9f41112d6")
+RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "instagram-scraper-2023.p.rapidapi.com")
+
 ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
 CHECK_INTERVAL_SECONDS = 10
 
@@ -422,65 +426,78 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- 100% ACCURATE INSTAGRAM LIVE TRACKER ENGINE -----------------
+# ----------------- RAPIDAPI LIVE PROXY SCRAPER ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
-    
-    headers_list = [
-        {
-            "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9"
-        },
-        {
-            "User-Agent": "Twitterbot/1.0",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9"
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 TelegramBot (like TwitterBot)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-    ]
 
-    for headers in headers_list:
+    # Layer 1: RapidAPI Official Residential Endpoint (Instagram Scraper 2023)
+    if RAPIDAPI_KEY:
         try:
-            url = f"https://www.instagram.com/{username}/"
-            res = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
-            html = res.text
+            endpoints = [
+                f"https://{RAPIDAPI_HOST}/userinfo/{username}",
+                f"https://{RAPIDAPI_HOST}/user_info?username={username}"
+            ]
+            api_headers = {
+                "X-RapidAPI-Key": RAPIDAPI_KEY,
+                "X-RapidAPI-Host": RAPIDAPI_HOST
+            }
 
-            # Standard 404 or Removed Markers
-            if res.status_code == 404:
-                return {"active": False, "followers": 0, "following": 0}
-
-            if "Page Not Found" in html or "isn't available" in html or "link you followed may be broken" in html:
-                return {"active": False, "followers": 0, "following": 0}
-
-            # If Instagram returns profile page
-            if res.status_code == 200:
-                followers = "N/A"
-                following = "N/A"
-
-                desc_match = re.search(r'<meta\s+(?:property|name)=["\'](?:og:description|description)["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
-                if not desc_match:
-                    desc_match = re.search(r'content=["\']([^"\']+)["\']\s+(?:property|name)=["\'](?:og:description|description)["\']', html, re.IGNORECASE)
-
-                if desc_match:
-                    desc_content = desc_match.group(1)
-                    counts = re.findall(r'([\d\.,kKmMbB]+)\s+(?:Followers|Following)', desc_content, re.IGNORECASE)
-                    if len(counts) >= 1:
-                        followers = counts[0]
-                    if len(counts) >= 2:
-                        following = counts[1]
-
-                if f"/{username}" in html or f"@{username}" in html or "instagram.com" in html or "og:title" in html:
-                    return {
-                        "active": True,
-                        "followers": followers,
-                        "following": following
-                    }
+            for ep in endpoints:
+                try:
+                    res = requests.get(ep, headers=api_headers, timeout=7)
+                    if res.status_code == 200:
+                        data = res.json()
+                        user = data.get("data") or data.get("user") or data
+                        if isinstance(user, dict) and (user.get("username") or user.get("id") or user.get("pk")):
+                            followers = user.get("follower_count") or user.get("edge_followed_by", {}).get("count") or "N/A"
+                            following = user.get("following_count") or user.get("edge_follow", {}).get("count") or "N/A"
+                            return {
+                                "active": True,
+                                "followers": followers,
+                                "following": following
+                            }
+                    elif res.status_code == 404:
+                        return {"active": False, "followers": 0, "following": 0}
+                except Exception:
+                    pass
         except Exception:
-            continue
+            pass
+
+    # Layer 2: Social Meta Handshake Fallback (No False Positive)
+    crawler_headers = {
+        "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    }
+
+    try:
+        url = f"https://www.instagram.com/{username}/"
+        res = requests.get(url, headers=crawler_headers, timeout=6, allow_redirects=True)
+        html = res.text
+
+        if res.status_code == 404:
+            return {"active": False, "followers": 0, "following": 0}
+
+        ban_keywords = ["page not found", "isn't available", "link you followed may be broken", "unavailable", "profile_missing"]
+        if any(k in html.lower() for k in ban_keywords):
+            return {"active": False, "followers": 0, "following": 0}
+
+        og_title_match = re.search(r'<meta\s+(?:property|name)=["\']og:title["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        og_title = og_title_match.group(1).lower() if og_title_match else ""
+
+        if not og_title or og_title == "instagram" or "page not found" in og_title:
+            return {"active": False, "followers": 0, "following": 0}
+
+        if username in og_title or f"@{username}" in og_title or "(" in og_title:
+            followers = "N/A"
+            following = "N/A"
+            desc_match = re.search(r'<meta\s+(?:property|name)=["\'](?:og:description|description)["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if desc_match:
+                counts = re.findall(r'([\d\.,kKmMbB]+)\s+(?:Followers|Following)', desc_match.group(1), re.IGNORECASE)
+                if len(counts) >= 1: followers = counts[0]
+                if len(counts) >= 2: following = counts[1]
+            return {"active": True, "followers": followers, "following": following}
+    except Exception:
+        pass
 
     return {"active": False, "followers": 0, "following": 0}
 
@@ -496,13 +513,9 @@ def monitor_loop():
             # Process Unban Monitors
             unban_items = list(db.get("unban_monitors", {}).items())
             if unban_items:
-                usernames = [u for u, _ in unban_items]
-                for user in usernames:
+                for user, info in unban_items:
                     st = check_single_account(user)
                     if st["active"] is True:
-                        info = db["unban_monitors"].get(user)
-                        if not info:
-                            continue
                         elapsed = time.time() - info.get("start_time", time.time())
                         time_str = format_time_taken(elapsed)
                         f_by = format_count(st["followers"])
@@ -532,16 +545,12 @@ def monitor_loop():
             # Process Ban Monitors
             ban_items = list(db.get("ban_monitors", {}).items())
             if ban_items:
-                usernames = [u for u, _ in ban_items]
-                for user in usernames:
+                for user, info in ban_items:
                     st = check_single_account(user)
                     if st["active"] is False:
                         time.sleep(2)
                         recheck = check_single_account(user)
                         if recheck["active"] is False:
-                            info = db["ban_monitors"].get(user)
-                            if not info:
-                                continue
                             elapsed = time.time() - info.get("start_time", time.time())
                             time_str = format_time_taken(elapsed)
                             f_by = format_count(info.get("followers", "N/A"))
@@ -1165,5 +1174,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("Dual Tracker Bot is active and running...", flush=True)
+    print("Dual Tracker Bot is active and running with RapidAPI Engine...", flush=True)
     run_bot_polling()

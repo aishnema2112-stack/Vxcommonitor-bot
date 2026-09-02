@@ -3,7 +3,6 @@ import sys
 import time
 import json
 import re
-import random
 import threading
 import io
 import requests
@@ -14,16 +13,16 @@ from datetime import datetime, timezone, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Force unbuffered stdout for Render logs
+# Unbuffered stdout for real-time Render logs
 sys.stdout.reconfigure(line_buffering=True)
 
-# ----------------- TAMPER-PROOF CREDITS -----------------
+# ----------------- TAMPER-PROOF INTEGRITY -----------------
 DEVELOPER_TAG = "@jyoex"
 DEV_CHANNEL = "JYOEX NETWORK"
 
 def _verify_integrity():
     if DEVELOPER_TAG != "@jyoex" or DEV_CHANNEL != "JYOEX NETWORK":
-        print("[SECURITY] Tamper detected.", flush=True)
+        print("[SECURITY] Tamper detected. Halting execution.", flush=True)
         sys.exit(1)
 
 _verify_integrity()
@@ -43,21 +42,20 @@ def run_server():
     try:
         port = int(os.environ.get("PORT", 8080))
         server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-        print(f"Web server active on port {port}", flush=True)
+        print(f"[SERVER] Health check server active on port {port}", flush=True)
         server.serve_forever()
     except Exception as e:
-        print(f"Web server error: {e}", flush=True)
+        print(f"[SERVER ERROR] Web server crashed: {e}", flush=True)
 
 threading.Thread(target=run_server, daemon=True).start()
 
-# ----------------- CONFIGURATION & POSTGRESQL -----------------
+# ----------------- CONFIGURATION & CONSTANTS -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8961164126:AAG_Q249Bw2m4lOlcVzB2XymhpSyHTvP1SU")
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql://neondb_owner:npg_7ov9OuACpHDI@ep-little-pond-aybs8spz-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require"
 )
 
-# Aapki Verified RapidAPI Key aur Host
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "337bbf6e6msha0546c6920452d1p1d5c27jsn1fd9f41112d6")
 RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "instagram-scraper-2023.p.rapidapi.com")
 
@@ -66,10 +64,11 @@ CHECK_INTERVAL_SECONDS = 10
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
+db_lock = threading.Lock()
 admin_state = {}
 user_message_history = {}
 
-# ----------------- NEON CLOUD DATABASE ENGINE -----------------
+# ----------------- NEON POSTGRESQL ENGINE -----------------
 def get_db_connection():
     clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
     return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
@@ -87,9 +86,9 @@ def init_postgres():
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Neon PostgreSQL Database Initialized Successfully!", flush=True)
+        print("[DATABASE] Neon PostgreSQL Schema Verified & Initialized!", flush=True)
     except Exception as e:
-        print(f"❌ Database Init Error: {e}", flush=True)
+        print(f"[DATABASE ERROR] Init failed: {e}", flush=True)
 
 init_postgres()
 
@@ -114,82 +113,60 @@ def get_default_db_data():
             {"id": "c3", "name": "Sell Hub", "tag": "@Foraremy", "link": "https://t.me/+gM43iG6v-vFmYjc1", "color": "📢"}
         ],
         "media": {
-            "force_join": {
-                "type": "animation",
-                "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyemw2YjhhNWx5endhbGl5cmZ6dmJrYXhmNDZ0bDFmbmhwZmszNHd0eiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/1cGfefKF0bSSmzyThu/giphy.gif"
-            },
-            "dm_notice": {
-                "type": "animation",
-                "id": "https://media4.giphy.com/media/v1.Y2lkPTZjMDliOTUyYW1jdmFrdDN2anZ3a2t0cWZna2xjNG5tYWxxZWp2cWJwOWh0bno3NiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/xWIklyBVywrEjcMKWJ/giphy.gif"
-            },
-            "subscription": {
-                "type": "animation",
-                "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUycW84MGMwMjE4ZXdjOGpnMmhlaHVqYjIzaTR2c2FzZzY4cHBqNnN1aSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7aCQtmuE6a5VybLi/giphy.gif"
-            },
-            "ub_req": {
-                "type": "animation",
-                "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyZTcyYTVjaGc4NmY1emdwNWo3bHZjdHdjejc5ZTV6a2dtdmZ0cDVpdyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/FB5EOw0CaaQM0/giphy.gif"
-            },
-            "ub_done": {
-                "type": "animation",
-                "id": "https://media3.giphy.com/media/v1.Y2lkPTZjMDliOTUycDhtZ2lpcTJqcGoxam9rM2k3cDd1Z2Vpc2hteWdxZzR5NHF1amFkYiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/bdrGSR9rPkvEoRp8dw/giphy.gif"
-            },
-            "b_req": {
-                "type": "animation",
-                "id": "https://media2.giphy.com/media/v1.Y2lkPTZjMDliOTUya2FmcnV4OWd5azI1NzhnMzZicG5mOHhrZmFzNHFlMW5zaTJuYXFkNiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/HyOOyynWxMxig/giphy.gif"
-            },
-            "b_done": {
-                "type": "animation",
-                "id": "https://media1.giphy.com/media/v1.Y2lkPTZjMDliOTUydjNzdzh1NjBhcHp0bTdvNzJmcmdjZjhseHE4c3Nqd21waHR2dGd5byZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/XOiECsEvO6PfVkEJ3P/giphy.gif"
-            },
-            "deny": {
-                "type": "animation",
-                "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyZXA5MmJ6ZDFjMHc0MmZ5bTJ0ZXNqeTIxbjJpenc4bWJtcXdpcWJuZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/33OJOxsSqv6uPVOUcA/giphy.gif"
-            }
+            "force_join": {"type": "animation", "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyemw2YjhhNWx5endhbGl5cmZ6dmJrYXhmNDZ0bDFmbmhwZmszNHd0eiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/1cGfefKF0bSSmzyThu/giphy.gif"},
+            "dm_notice": {"type": "animation", "id": "https://media4.giphy.com/media/v1.Y2lkPTZjMDliOTUyYW1jdmFrdDN2anZ3a2t0cWZna2xjNG5tYWxxZWp2cWJwOWh0bno3NiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/xWIklyBVywrEjcMKWJ/giphy.gif"},
+            "subscription": {"type": "animation", "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUycW84MGMwMjE4ZXdjOGpnMmhlaHVqYjIzaTR2c2FzZzY4cHBqNnN1aSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7aCQtmuE6a5VybLi/giphy.gif"},
+            "ub_req": {"type": "animation", "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyZTcyYTVjaGc4NmY1emdwNWo3bHZjdHdjejc5ZTV6a2dtdmZ0cDVpdyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/FB5EOw0CaaQM0/giphy.gif"},
+            "ub_done": {"type": "animation", "id": "https://media3.giphy.com/media/v1.Y2lkPTZjMDliOTUycDhtZ2lpcTJqcGoxam9rM2k3cDd1Z2Vpc2hteWdxZzR5NHF1amFkYiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/bdrGSR9rPkvEoRp8dw/giphy.gif"},
+            "b_req": {"type": "animation", "id": "https://media2.giphy.com/media/v1.Y2lkPTZjMDliOTUya2FmcnV4OWd5azI1NzhnMzZicG5mOHhrZmFzNHFlMW5zaTJuYXFkNiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/HyOOyynWxMxig/giphy.gif"},
+            "b_done": {"type": "animation", "id": "https://media1.giphy.com/media/v1.Y2lkPTZjMDliOTUydjNzdzh1NjBhcHp0bTdvNzJmcmdjZjhseHE4c3Nqd21waHR2dGd5byZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/XOiECsEvO6PfVkEJ3P/giphy.gif"},
+            "deny": {"type": "animation", "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyZXA5MmJ6ZDFjMHc0MmZ5bTJ0ZXNqeTIxbjJpenc4bWJtcXdpcWJuZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/33OJOxsSqv6uPVOUcA/giphy.gif"}
         }
     }
 
 def load_db():
     default_data = get_default_db_data()
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT data FROM bot_storage WHERE key = 'main_config';")
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if row and row[0]:
-            data = row[0]
-            if isinstance(data, str):
-                data = json.loads(data)
-            for k, v in default_data.items():
-                if k not in data:
-                    data[k] = v
-            return data
-        else:
-            save_db(default_data)
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT data FROM bot_storage WHERE key = 'main_config';")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            
+            if row and row[0]:
+                data = row[0]
+                if isinstance(data, str):
+                    data = json.loads(data)
+                for k, v in default_data.items():
+                    if k not in data:
+                        data[k] = v
+                return data
+            else:
+                save_db(default_data)
+                return default_data
+        except Exception as e:
+            print(f"[DATABASE ERROR] Load failed: {e}", flush=True)
             return default_data
-    except Exception as e:
-        print(f"Neon Load Error: {e}", flush=True)
-        return default_data
 
 def save_db(data):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        json_payload = json.dumps(data, default=str)
-        cur.execute("""
-            INSERT INTO bot_storage (key, data)
-            VALUES ('main_config', %s)
-            ON CONFLICT (key) DO UPDATE
-            SET data = EXCLUDED.data;
-        """, (json_payload,))
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Neon Save Error: {e}", flush=True)
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            json_payload = json.dumps(data, default=str)
+            cur.execute("""
+                INSERT INTO bot_storage (key, data)
+                VALUES ('main_config', %s)
+                ON CONFLICT (key) DO UPDATE
+                SET data = EXCLUDED.data;
+            """, (json_payload,))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"[DATABASE ERROR] Save failed: {e}", flush=True)
 
 db = load_db()
 
@@ -243,8 +220,8 @@ def register_user(user, chat_id=None):
             for adm in db.get("admins", []):
                 try:
                     bot.send_message(adm, alert_text)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[NOTIFY ERROR] Admin {adm}: {e}", flush=True)
     else:
         db["users"][user_id]["name"] = user.first_name or "Unknown"
         db["users"][user_id]["username"] = f"@{user.username}" if user.username else "No Username"
@@ -344,10 +321,10 @@ def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
         else:
             return bot.send_photo(chat_id=chat_id, photo=m_id, caption=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
     except Exception as e:
-        print(f"Media fallback error: {e}", flush=True)
+        print(f"[MEDIA ERROR] Fallback text: {e}", flush=True)
         return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
 
-# ----------------- STRICT FORCE JOIN VERIFICATION -----------------
+# ----------------- FORCE JOIN VERIFICATION -----------------
 def get_missing_channels(user_id):
     missing = []
     for ch in db.get("channels", []):
@@ -355,8 +332,8 @@ def get_missing_channels(user_id):
             member = bot.get_chat_member(ch["tag"], user_id)
             if member.status not in ['creator', 'administrator', 'member']:
                 missing.append(ch)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CHANNEL CHECK] Channel {ch['tag']} check notice: {e}", flush=True)
     return missing
 
 def build_force_join_markup():
@@ -426,80 +403,97 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- RAPIDAPI LIVE PROXY SCRAPER ENGINE -----------------
+# ----------------- STRICT 3-STATE SCRAPER ENGINE -----------------
 def check_single_account(username):
+    """
+    Instagram account status checker.
+
+    Returns:
+      ACTIVE  -> HTTP 200 + valid profile fields
+      BANNED  -> HTTP 404 from verified endpoint
+      UNKNOWN -> auth/rate-limit/server/timeout/invalid response
+    """
     username = username.strip().lower().replace("@", "")
 
-    # Layer 1: RapidAPI Official Residential Endpoint (Instagram Scraper 2023)
-    if RAPIDAPI_KEY:
-        try:
-            endpoints = [
-                f"https://{RAPIDAPI_HOST}/userinfo/{username}",
-                f"https://{RAPIDAPI_HOST}/user_info?username={username}"
-            ]
-            api_headers = {
-                "X-RapidAPI-Key": RAPIDAPI_KEY,
-                "X-RapidAPI-Host": RAPIDAPI_HOST
-            }
+    if not username:
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-            for ep in endpoints:
-                try:
-                    res = requests.get(ep, headers=api_headers, timeout=7)
-                    if res.status_code == 200:
-                        data = res.json()
-                        user = data.get("data") or data.get("user") or data
-                        if isinstance(user, dict) and (user.get("username") or user.get("id") or user.get("pk")):
-                            followers = user.get("follower_count") or user.get("edge_followed_by", {}).get("count") or "N/A"
-                            following = user.get("following_count") or user.get("edge_follow", {}).get("count") or "N/A"
-                            return {
-                                "active": True,
-                                "followers": followers,
-                                "following": following
-                            }
-                    elif res.status_code == 404:
-                        return {"active": False, "followers": 0, "following": 0}
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    # Layer 2: Social Meta Handshake Fallback (No False Positive)
-    crawler_headers = {
-        "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    url = f"https://{RAPIDAPI_HOST}/userinfo"
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": RAPIDAPI_HOST
     }
+    params = {"username": username}
 
     try:
-        url = f"https://www.instagram.com/{username}/"
-        res = requests.get(url, headers=crawler_headers, timeout=6, allow_redirects=True)
-        html = res.text
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        print(f"[RAPIDAPI] @{username} -> HTTP {response.status_code}", flush=True)
 
-        if res.status_code == 404:
-            return {"active": False, "followers": 0, "following": 0}
+        # ---------------- ACTIVE ----------------
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError:
+                print(f"[RAPIDAPI] @{username} -> Invalid JSON", flush=True)
+                return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-        ban_keywords = ["page not found", "isn't available", "link you followed may be broken", "unavailable", "profile_missing"]
-        if any(k in html.lower() for k in ban_keywords):
-            return {"active": False, "followers": 0, "following": 0}
+            profile = data.get("data", data)
+            if not isinstance(profile, dict):
+                print(f"[RAPIDAPI] @{username} -> Invalid profile object", flush=True)
+                return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-        og_title_match = re.search(r'<meta\s+(?:property|name)=["\']og:title["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
-        og_title = og_title_match.group(1).lower() if og_title_match else ""
+            returned_username = profile.get("username")
+            profile_id = profile.get("id")
+            follower_count = profile.get("follower_count")
+            following_count = profile.get("following_count")
 
-        if not og_title or og_title == "instagram" or "page not found" in og_title:
-            return {"active": False, "followers": 0, "following": 0}
+            if (
+                returned_username
+                and profile_id is not None
+                and follower_count is not None
+                and following_count is not None
+            ):
+                print(f"[RAPIDAPI] @{username} -> ACTIVE | Followers: {follower_count} | Following: {following_count}", flush=True)
+                return {
+                    "status": "ACTIVE",
+                    "followers": follower_count,
+                    "following": following_count
+                }
 
-        if username in og_title or f"@{username}" in og_title or "(" in og_title:
-            followers = "N/A"
-            following = "N/A"
-            desc_match = re.search(r'<meta\s+(?:property|name)=["\'](?:og:description|description)["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
-            if desc_match:
-                counts = re.findall(r'([\d\.,kKmMbB]+)\s+(?:Followers|Following)', desc_match.group(1), re.IGNORECASE)
-                if len(counts) >= 1: followers = counts[0]
-                if len(counts) >= 2: following = counts[1]
-            return {"active": True, "followers": followers, "following": following}
-    except Exception:
-        pass
+            print(f"[RAPIDAPI] @{username} -> HTTP 200 but profile validation failed", flush=True)
+            return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-    return {"active": False, "followers": 0, "following": 0}
+        # ---------------- NOT AVAILABLE / BANNED ----------------
+        elif response.status_code == 404:
+            print(f"[RAPIDAPI] @{username} -> 404 BANNED/UNAVAILABLE", flush=True)
+            return {"status": "BANNED", "followers": 0, "following": 0}
+
+        # ---------------- AUTH / RATE LIMIT ----------------
+        elif response.status_code in (401, 403, 429):
+            print(f"[RAPIDAPI] @{username} -> HTTP {response.status_code} UNKNOWN", flush=True)
+            return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+        # ---------------- SERVER ERROR ----------------
+        elif 500 <= response.status_code <= 599:
+            print(f"[RAPIDAPI] @{username} -> HTTP {response.status_code} UNKNOWN", flush=True)
+            return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+        # ---------------- ANY OTHER RESPONSE ----------------
+        else:
+            print(f"[RAPIDAPI] @{username} -> Unexpected HTTP {response.status_code}", flush=True)
+            return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+    except requests.exceptions.Timeout:
+        print(f"[RAPIDAPI] @{username} -> TIMEOUT / UNKNOWN", flush=True)
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+    except requests.exceptions.RequestException as e:
+        print(f"[RAPIDAPI] @{username} -> REQUEST ERROR: {e}", flush=True)
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+    except Exception as e:
+        print(f"[RAPIDAPI] @{username} -> UNKNOWN ERROR: {e}", flush=True)
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
 def get_instagram_details(username):
     return check_single_account(username)
@@ -510,16 +504,16 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # Process Unban Monitors
+            # Process Unban Monitors (/ub) -> Expecting ACTIVE
             unban_items = list(db.get("unban_monitors", {}).items())
             if unban_items:
                 for user, info in unban_items:
-                    st = check_single_account(user)
-                    if st["active"] is True:
+                    res = check_single_account(user)
+                    if res["status"] == "ACTIVE":
                         elapsed = time.time() - info.get("start_time", time.time())
                         time_str = format_time_taken(elapsed)
-                        f_by = format_count(st["followers"])
-                        f_to = format_count(st["following"])
+                        f_by = format_count(res["followers"])
+                        f_to = format_count(res["following"])
                         user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
                         ig_link = get_ig_link(user)
 
@@ -538,19 +532,19 @@ def monitor_loop():
                         except Exception:
                             pass
 
-                        del db["unban_monitors"][user]
+                        db["unban_monitors"].pop(user, None)
                         save_db(db)
                     time.sleep(1)
 
-            # Process Ban Monitors
+            # Process Ban Monitors (/b) -> Expecting BANNED
             ban_items = list(db.get("ban_monitors", {}).items())
             if ban_items:
                 for user, info in ban_items:
-                    st = check_single_account(user)
-                    if st["active"] is False:
+                    res = check_single_account(user)
+                    if res["status"] == "BANNED":
                         time.sleep(2)
                         recheck = check_single_account(user)
-                        if recheck["active"] is False:
+                        if recheck["status"] == "BANNED":
                             elapsed = time.time() - info.get("start_time", time.time())
                             time_str = format_time_taken(elapsed)
                             f_by = format_count(info.get("followers", "N/A"))
@@ -573,13 +567,13 @@ def monitor_loop():
                             except Exception:
                                 pass
 
-                            del db["ban_monitors"][user]
+                            db["ban_monitors"].pop(user, None)
                             save_db(db)
                     time.sleep(1)
 
             time.sleep(CHECK_INTERVAL_SECONDS)
         except Exception as e:
-            print(f"Loop error: {e}", flush=True)
+            print(f"[MONITOR LOOP ERROR] {e}", flush=True)
             time.sleep(10)
 
 threading.Thread(target=monitor_loop, daemon=True).start()
@@ -997,8 +991,8 @@ def handle_unban_request(message):
         bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
         return
 
-    status = get_instagram_details(username)
-    if status["active"] is True:
+    status_data = check_single_account(username)
+    if status_data["status"] == "ACTIVE":
         caption = (
             f"ℹ️ <b>{ig_link}</b> is already active.\n\n"
             f"👤 Requested by: {user_mention}"
@@ -1053,8 +1047,8 @@ def handle_ban_request(message):
         bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
         return
 
-    status = get_instagram_details(username)
-    if status["active"] is False:
+    status_data = check_single_account(username)
+    if status_data["status"] == "BANNED":
         caption = (
             f"ℹ️ <b>{ig_link}</b> is already banned or unavailable.\n\n"
             f"👤 Requested by: {user_mention}"
@@ -1071,8 +1065,8 @@ def handle_ban_request(message):
         "chat_id": message.chat.id,
         "user_id": user_id,
         "user_name": user_name,
-        "followers": status["followers"],
-        "following": status["following"],
+        "followers": status_data["followers"],
+        "following": status_data["following"],
         "start_time": time.time(),
         "requested_time": req_time,
         "requested_date": req_date
@@ -1166,13 +1160,13 @@ def run_bot_polling():
         try:
             bot.remove_webhook()
             time.sleep(1)
-            print("Starting TeleBot Polling...", flush=True)
+            print("[BOT] Starting TeleBot Polling...", flush=True)
             bot.infinity_polling(timeout=20, long_polling_timeout=15, skip_pending=True, none_stop=True)
         except Exception as e:
-            print(f"[RECONNECT] {e}. Reconnecting in 3s...", flush=True)
+            print(f"[BOT ERROR] Polling interrupted: {e}. Reconnecting in 3s...", flush=True)
             time.sleep(3)
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("Dual Tracker Bot is active and running with RapidAPI Engine...", flush=True)
+    print("[INIT] Dual Tracker Bot is active and running with RapidAPI Engine...", flush=True)
     run_bot_polling()

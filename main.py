@@ -397,7 +397,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ACCURATE INSTAGRAM ENGINE -----------------
+# ----------------- DYNAMIC & ACCURATE INSTAGRAM ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
@@ -407,7 +407,7 @@ def check_single_account(username):
     if INSTAGRAM_SESSION_ID:
         cookies["sessionid"] = INSTAGRAM_SESSION_ID
 
-    api_headers = {
+    headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "X-IG-App-ID": "936619743392459",
         "X-ASBD-ID": "129477",
@@ -415,15 +415,16 @@ def check_single_account(username):
         "Referer": f"https://www.instagram.com/{username}/"
     }
 
+    # Step 1: Internal Web Profile API
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        r_api = requests.get(api_url, headers=api_headers, cookies=cookies, timeout=6)
+        r_api = requests.get(api_url, headers=headers, cookies=cookies, timeout=5)
         if r_api.status_code == 200:
             data = r_api.json()
             user_data = data.get("data", {}).get("user")
-            if user_data:
-                followers = user_data.get("edge_followed_by", {}).get("count", "0")
-                following = user_data.get("edge_follow", {}).get("count", "0")
+            if user_data and user_data.get("id"):
+                followers = user_data.get("edge_followed_by", {}).get("count", 0)
+                following = user_data.get("edge_follow", {}).get("count", 0)
                 return {
                     "status": "ACTIVE",
                     "followers": followers,
@@ -435,38 +436,52 @@ def check_single_account(username):
     except Exception:
         pass
 
-    # Method 2: Fallback Web HTML Check
-    web_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-
+    # Step 2: Strict Public Meta Embed Verification
     try:
-        url = f"https://www.instagram.com/{username}/"
-        response = requests.get(url, headers=web_headers, cookies=cookies, timeout=8, allow_redirects=True)
-
-        if response.status_code in (404, 410):
+        embed_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        embed_url = f"https://www.instagram.com/{username}/embed/"
+        r_embed = requests.get(embed_url, headers=embed_headers, timeout=6)
+        
+        if r_embed.status_code in (404, 410):
+            return {"status": "BANNED", "followers": 0, "following": 0}
+            
+        embed_text = r_embed.text
+        if any(err in embed_text for err in ["Page Not Found", "unavailable", "The link you followed may be broken"]):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
-        html = response.text
+        if "View profile" in embed_text or "Watch on Instagram" in embed_text:
+            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+    except Exception:
+        pass
 
-        if any(msg in html for msg in ["Sorry, this page isn't available.", "The link you followed may be broken", "Page Not Found"]):
+    # Step 3: Strict HTML Meta Tag Extraction
+    try:
+        web_url = f"https://www.instagram.com/{username}/"
+        r_web = requests.get(web_url, headers=headers, cookies=cookies, timeout=6, allow_redirects=True)
+        
+        if r_web.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
-        desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', html)
+        web_html = r_web.text
+        if any(err in web_html for err in ["Sorry, this page isn't available.", "The link you followed may be broken", "Page Not Found"]):
+            return {"status": "BANNED", "followers": 0, "following": 0}
+
+        desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', web_html)
         if desc_match:
             content = desc_match.group(1)
             counts = re.findall(r'([\d\.,kKmM]+)\s+(?:Followers|Following)', content)
-            followers = counts[0] if len(counts) > 0 else "0"
-            following = counts[1] if len(counts) > 1 else "0"
-            return {
-                "status": "ACTIVE",
-                "followers": followers,
-                "following": following
-            }
+            if len(counts) >= 2:
+                return {
+                    "status": "ACTIVE",
+                    "followers": counts[0],
+                    "following": counts[1]
+                }
 
-        return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+        # Any redirected login wall or missing account info counts as BANNED
+        return {"status": "BANNED", "followers": 0, "following": 0}
 
     except Exception as e:
         print(f"[SCRAPER EXCEPTION] {e}", flush=True)

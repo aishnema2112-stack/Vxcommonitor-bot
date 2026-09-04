@@ -138,11 +138,14 @@ def load_db():
                 data = row[0]
                 if isinstance(data, str):
                     data = json.loads(data)
+                
+                # Force clean override for fixed clean layout
+                data["channels"] = default_data["channels"]
+                data["buttons"] = default_data["buttons"]
+
                 for k, v in default_data.items():
                     if k not in data:
                         data[k] = v
-                if "buttons" not in data:
-                    data["buttons"] = default_data["buttons"]
                 return data
             else:
                 save_db(default_data)
@@ -347,7 +350,7 @@ def build_force_join_markup():
         btn_label = f"{ch.get('color', '📢')} {ch['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=ch["link"]))
     
-    # Add additional external buttons (like Sell Hub private link)
+    # Add additional external buttons (Sell Hub private link)
     for btn in db.get("buttons", []):
         btn_label = f"{btn.get('color', '📢')} {btn['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=btn["link"]))

@@ -53,7 +53,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "")
 
-ALLOWED_CLAIM_PASSWORDS = ["mansour$vx", "Hamzai@1"]
+ADMIN_PASSWORD = "mansour$vx"
+PREMIUM_PASSWORD = "Hamzai@1"
 CHECK_INTERVAL_SECONDS = 10
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
@@ -92,6 +93,8 @@ def get_default_db_data():
         "unban_monitors": {},
         "ban_monitors": {},
         "admins": [],
+        "premium_users": [],
+        "premium_pass_claimed": False,
         "users": {},
         "groups": [],
         "settings": {
@@ -186,6 +189,9 @@ def get_ig_link(username):
 
 def is_admin_or_owner(user_id):
     return user_id in db.get("admins", [])
+
+def is_premium_user(user_id):
+    return user_id in db.get("premium_users", []) or is_admin_or_owner(user_id)
 
 def register_user(user, chat_id=None):
     user_id = str(user.id)
@@ -344,7 +350,8 @@ def check_access(message):
     register_user(user, chat.id)
     track_and_clean_spam(chat.id, user.id, message.message_id)
 
-    if is_admin_or_owner(user.id):
+    # Admin ya Premium user ko direct access
+    if is_admin_or_owner(user.id) or is_premium_user(user.id):
         return True
 
     missing = get_missing_channels(user.id)
@@ -480,7 +487,6 @@ def check_single_account(username):
                     "following": counts[1]
                 }
 
-        # Any redirected login wall or missing account info counts as BANNED
         return {"status": "BANNED", "followers": 0, "following": 0}
 
     except Exception as e:
@@ -570,7 +576,7 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
-# ----------------- ADMIN DASHBOARD -----------------
+# ----------------- ADMIN DASHBOARD & CLAIM HANDLERS -----------------
 def get_admin_panel_markup():
     m_status = "🟢 ON" if db.get("settings", {}).get("maintenance", False) else "⚪ OFF"
     n_status = "🔔 ON" if db.get("settings", {}).get("new_user_notify", True) else "🔕 OFF"
@@ -598,7 +604,27 @@ def handle_claim(message):
         return
 
     admin_state[user_id] = "waiting_claim_password"
-    bot.reply_to(message, "🔒 <b>Owner Verification Required</b>\n\nPlease enter the secret admin password:")
+    bot.reply_to(message, "🔒 <b>Secret Access Verification Required</b>\n\nPlease enter the secret claim password:")
+
+@bot.message_handler(commands=['remove', 'unclaim'])
+def handle_remove_admin(message):
+    if message.chat.type != "private":
+        return
+    user_id = message.from_user.id
+    removed = False
+
+    if user_id in db.get("admins", []):
+        db["admins"].remove(user_id)
+        removed = True
+    if user_id in db.get("premium_users", []):
+        db["premium_users"].remove(user_id)
+        removed = True
+
+    if removed:
+        save_db(db)
+        bot.reply_to(message, "✅ <b>Successfully Removed!</b>\nAapko Admin/Premium position se hata diya gaya hai.")
+    else:
+        bot.reply_to(message, "ℹ️ Aapke paas koi Admin ya Premium position nahi hai.")
 
 @bot.message_handler(commands=['admin'])
 def handle_admin(message):
@@ -862,14 +888,30 @@ def process_admin_inputs(message):
     if state == "waiting_claim_password":
         admin_state.pop(user_id, None)
         entered_pass = message.text.strip() if message.text else ""
-        if entered_pass in ALLOWED_CLAIM_PASSWORDS:
+
+        # Check 1: Master Admin Password
+        if entered_pass == ADMIN_PASSWORD:
             if user_id not in db["admins"]:
                 db.setdefault("admins", []).append(user_id)
                 save_db(db)
-            bot.reply_to(message, "👑 <b>Password Verified!</b> You are now registered as Owner/Admin. Send <code>/admin</code> to open panel.")
+            bot.reply_to(message, "👑 <b>Admin Password Verified!</b>\nAapko master admin bana diya gaya hai. Send <code>/admin</code> to open panel.")
+            return
+
+        # Check 2: Special Single-Use Premium Password
+        elif entered_pass == PREMIUM_PASSWORD:
+            if db.get("premium_pass_claimed", False):
+                bot.reply_to(message, "❌ <b>Password Already Claimed!</b>\nYeh password already kisi user dwara claim kiya ja chuka hai.")
+                return
+
+            db.setdefault("premium_users", []).append(user_id)
+            db["premium_pass_claimed"] = True
+            save_db(db)
+            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nAapko Premium User privileges mil gayi hain. Ab aap bina kisi restriction ke <code>/ub</code>, <code>/b</code>, aur <code>/status</code> use kar sakte hain.")
+            return
+
         else:
             bot.reply_to(message, "❌ <b>Incorrect Password!</b> Access Denied.")
-        return
+            return
 
     if message.text and message.text.lower() in ["/cancel", "cancel"]:
         admin_state.pop(user_id, None)
@@ -965,6 +1007,7 @@ def handle_start_help(message):
         "• <code>/ub username</code> — Monitor account recovery / unban\n"
         "• <code>/b username</code> — Monitor account for ban\n"
         "• <code>/status</code> — Monitored accounts list\n"
+        "• <code>/remove</code> — Remove your Admin/Premium access\n"
         "• <code>/help</code> — Instructions\n\n"
         f"Powered by: {DEVELOPER_TAG}"
     )
@@ -1128,7 +1171,7 @@ def handle_unrecognized_input(message):
         return
 
     missing = get_missing_channels(user.id)
-    if missing and not is_admin_or_owner(user.id):
+    if missing and not (is_admin_or_owner(user.id) or is_premium_user(user.id)):
         mention = get_user_mention(user.id, user.first_name)
         text = (
             "⚠️ <b>Access Restricted</b>\n\n"

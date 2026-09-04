@@ -106,8 +106,10 @@ def get_default_db_data():
         },
         "channels": [
             {"id": "c1", "name": "Jyoex", "tag": "@jyoex", "link": "https://t.me/jyoex", "color": "📢"},
-            {"id": "c2", "name": "Comchater", "tag": "@Comchater", "link": "https://t.me/Comchater", "color": "📢"},
-            {"id": "c3", "name": "Sell Hub", "tag": "-1002434007785", "link": "https://t.me/+gM43iG6v-vFmYjc1", "color": "📢"}
+            {"id": "c2", "name": "Comchater", "tag": "@Comchater", "link": "https://t.me/Comchater", "color": "📢"}
+        ],
+        "buttons": [
+            {"name": "Sell Hub", "link": "https://t.me/+gM43iG6v-vFmYjc1", "color": "📢"}
         ],
         "media": {
             "force_join": {"type": "animation", "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyemw2YjhhNWx5endhbGl5cmZ6dmJrYXhmNDZ0bDFmbmhwZmszNHd0eiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/1cGfefKF0bSSmzyThu/giphy.gif"},
@@ -139,6 +141,8 @@ def load_db():
                 for k, v in default_data.items():
                     if k not in data:
                         data[k] = v
+                if "buttons" not in data:
+                    data["buttons"] = default_data["buttons"]
                 return data
             else:
                 save_db(default_data)
@@ -338,9 +342,16 @@ def get_missing_channels(user_id):
 
 def build_force_join_markup():
     markup = types.InlineKeyboardMarkup(row_width=1)
+    # Add forced join public channels
     for ch in db.get("channels", []):
         btn_label = f"{ch.get('color', '📢')} {ch['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=ch["link"]))
+    
+    # Add additional external buttons (like Sell Hub private link)
+    for btn in db.get("buttons", []):
+        btn_label = f"{btn.get('color', '📢')} {btn['name']}"
+        markup.add(types.InlineKeyboardButton(btn_label, url=btn["link"]))
+
     markup.add(types.InlineKeyboardButton("✅ Verify", callback_data="verify_channels"))
     return markup
 
@@ -350,7 +361,6 @@ def check_access(message):
     register_user(user, chat.id)
     track_and_clean_spam(chat.id, user.id, message.message_id)
 
-    # Admin ya Premium user ko direct access
     if is_admin_or_owner(user.id) or is_premium_user(user.id):
         return True
 
@@ -392,12 +402,12 @@ def check_access(message):
 def handle_verify_callback(call):
     missing = get_missing_channels(call.from_user.id)
     if missing:
-        bot.answer_callback_query(call.id, "❌ You haven't joined all channels yet!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ You haven't joined all required channels yet!", show_alert=True)
     else:
-        bot.answer_callback_query(call.id, "✅ Verified! You can now use the bot in @Comchater", show_alert=True)
+        bot.answer_callback_query(call.id, "✅ Verified! You can now use the bot.", show_alert=True)
         try:
             bot.edit_message_caption(
-                caption="✅ <b>Access Granted!</b> You are verified. You can now use commands inside <b>@Comchater</b>.",
+                caption="✅ <b>Access Granted!</b> You are verified. You can now use the bot.",
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id
             )
@@ -422,7 +432,6 @@ def check_single_account(username):
         "Referer": f"https://www.instagram.com/{username}/"
     }
 
-    # Step 1: Internal Web Profile API
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
         r_api = requests.get(api_url, headers=headers, cookies=cookies, timeout=5)
@@ -443,7 +452,6 @@ def check_single_account(username):
     except Exception:
         pass
 
-    # Step 2: Strict Public Meta Embed Verification
     try:
         embed_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -464,7 +472,6 @@ def check_single_account(username):
     except Exception:
         pass
 
-    # Step 3: Strict HTML Meta Tag Extraction
     try:
         web_url = f"https://www.instagram.com/{username}/"
         r_web = requests.get(web_url, headers=headers, cookies=cookies, timeout=6, allow_redirects=True)
@@ -502,7 +509,6 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # Process Unban Monitors (/ub)
             unban_items = list(db.get("unban_monitors", {}).items())
             if unban_items:
                 for user, info in unban_items:
@@ -534,7 +540,6 @@ def monitor_loop():
                         save_db(db)
                     time.sleep(2)
 
-            # Process Ban Monitors (/b)
             ban_items = list(db.get("ban_monitors", {}).items())
             if ban_items:
                 for user, info in ban_items:
@@ -889,7 +894,6 @@ def process_admin_inputs(message):
         admin_state.pop(user_id, None)
         entered_pass = message.text.strip() if message.text else ""
 
-        # Check 1: Master Admin Password
         if entered_pass == ADMIN_PASSWORD:
             if user_id not in db["admins"]:
                 db.setdefault("admins", []).append(user_id)
@@ -897,7 +901,6 @@ def process_admin_inputs(message):
             bot.reply_to(message, "👑 <b>Admin Password Verified!</b>\nAapko master admin bana diya gaya hai. Send <code>/admin</code> to open panel.")
             return
 
-        # Check 2: Special Single-Use Premium Password
         elif entered_pass == PREMIUM_PASSWORD:
             if db.get("premium_pass_claimed", False):
                 bot.reply_to(message, "❌ <b>Password Already Claimed!</b>\nYeh password already kisi user dwara claim kiya ja chuka hai.")

@@ -407,10 +407,10 @@ def check_single_account(username):
     if INSTAGRAM_SESSION_ID:
         cookies["sessionid"] = INSTAGRAM_SESSION_ID
 
-    # Method 1: Internal Profile Web API
     api_headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "X-IG-App-ID": "936619743392459",
+        "X-ASBD-ID": "129477",
         "Accept": "*/*",
         "Referer": f"https://www.instagram.com/{username}/"
     }
@@ -466,9 +466,6 @@ def check_single_account(username):
                 "following": following
             }
 
-        if f'"{username}"' in html or f'/{username}/' in html or f"@{username}" in html:
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
-
         return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
 
     except Exception as e:
@@ -514,7 +511,7 @@ def monitor_loop():
 
                         db["unban_monitors"].pop(user, None)
                         save_db(db)
-                    time.sleep(1)
+                    time.sleep(2)
 
             # Process Ban Monitors (/b)
             ban_items = list(db.get("ban_monitors", {}).items())
@@ -522,7 +519,7 @@ def monitor_loop():
                 for user, info in ban_items:
                     res = check_single_account(user)
                     if res["status"] == "BANNED":
-                        time.sleep(2)
+                        time.sleep(3)
                         recheck = check_single_account(user)
                         if recheck["status"] == "BANNED":
                             elapsed = time.time() - info.get("start_time", time.time())
@@ -549,7 +546,7 @@ def monitor_loop():
 
                             db["ban_monitors"].pop(user, None)
                             save_db(db)
-                    time.sleep(1)
+                    time.sleep(2)
 
             time.sleep(CHECK_INTERVAL_SECONDS)
         except Exception as e:

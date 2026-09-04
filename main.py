@@ -1208,7 +1208,7 @@ def run_bot_polling():
             print("[BOT] Clearing previous webhooks and starting Polling safely...", flush=True)
             bot.remove_webhook()
             time.sleep(3)
-            bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True, none_stop=True)
+            bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True)
         except Exception as e:
             print(f"[BOT ERROR] Polling interrupted: {e}. Reconnecting in 5s...", flush=True)
             time.sleep(5)

@@ -396,7 +396,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- FIXED & ACCURATE INSTAGRAM SCRAPER ENGINE -----------------
+# ----------------- ACCURATE INSTAGRAM SCRAPER ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
@@ -579,7 +579,7 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("see_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
     if not is_admin_or_owner(user_id):
@@ -689,35 +689,42 @@ def handle_admin_callbacks(call):
         return
 
     if data == "admin_media":
-        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup = types.InlineKeyboardMarkup(row_width=3)
         media_keys = [
             ("1️⃣ /ub Req", "ub_req"),
             ("2️⃣ /ub Done", "ub_done"),
             ("3️⃣ /b Req", "b_req"),
             ("4️⃣ /b Done", "b_done"),
             ("5️⃣ ⚠️ Deny", "deny"),
-            ("6️⃣ 🚪 DM Notice", "dm_notice"),
+            ("6️⃣ 🚪 DM", "dm_notice"),
             ("7️⃣ 💎 Sub", "subscription"),
-            ("8️⃣ 🔒 Force Join", "force_join")
+            ("8️⃣ 🔒 Force", "force_join")
         ]
         for name, key in media_keys:
-            markup.add(
+            markup.row(
                 types.InlineKeyboardButton(f"✏️ {name}", callback_data=f"set_{key}"),
+                types.InlineKeyboardButton("👁️ See", callback_data=f"see_{key}"),
                 types.InlineKeyboardButton("🗑 Reset", callback_data=f"del_{key}")
             )
         markup.add(
-            types.InlineKeyboardButton("🔄 Reset ALL Media to Default", callback_data="reset_all_media"),
+            types.InlineKeyboardButton("🔄 Reset ALL Media", callback_data="reset_all_media"),
             types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
         )
         bot.edit_message_text(
-            "🖼 <b>Manage & Customize Media:</b>\n\n"
-            "• Tap <b>✏️ Edit</b> to upload new Photo/GIF/Sticker.\n"
-            "• Tap <b>🗑 Reset</b> to restore original default sticker.\n"
-            "• Tap <b>🔄 Reset ALL</b> to restore everything.",
+            "🖼 <b>Manage & Preview Media:</b>\n\n"
+            "• <b>✏️ Edit</b>: Upload new GIF/Photo.\n"
+            "• <b>👁️ See</b>: Preview current media.\n"
+            "• <b>🗑 Reset</b>: Restore default.",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup
         )
+        return
+
+    if data.startswith("see_"):
+        key = data.replace("see_", "")
+        bot.answer_callback_query(call.id, f"Previewing {key}...")
+        send_custom_media(call.message.chat.id, key, f"👁️ <b>Preview of Media key:</b> <code>{key}</code>")
         return
 
     if data.startswith("del_"):
@@ -1048,29 +1055,32 @@ def handle_status(message):
     if not check_access(message):
         return
 
+    user_id = message.from_user.id
     unbans = db.get("unban_monitors", {})
     bans = db.get("ban_monitors", {})
 
-    if not unbans and not bans:
-        bot.reply_to(message, "No active accounts in monitoring list.")
+    # Filter only requests made by THIS specific user
+    user_unbans = {u: d for u, d in unbans.items() if d.get("user_id") == user_id}
+    user_bans = {u: d for u, d in bans.items() if d.get("user_id") == user_id}
+
+    if not user_unbans and not user_bans:
+        bot.reply_to(message, "ℹ️ You have no active accounts currently in your monitoring list.")
         return
 
-    lines = ["📊 <b>Active Monitors</b>\n"]
-    if unbans:
+    lines = ["📊 <b>Your Active Monitors</b>\n"]
+    if user_unbans:
         lines.append("<b>Awaiting Recovery (/ub):</b>")
-        for u, d in unbans.items():
+        for u, d in user_unbans.items():
             t = format_time_taken(time.time() - d["start_time"])
-            mention = get_user_mention(d.get("user_id"), d.get("user_name"))
             ig_link = get_ig_link(u)
-            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>) — {mention}")
+            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
 
-    if bans:
+    if user_bans:
         lines.append("\n<b>Awaiting Ban (/b):</b>")
-        for u, d in bans.items():
+        for u, d in user_bans.items():
             t = format_time_taken(time.time() - d["start_time"])
-            mention = get_user_mention(d.get("user_id"), d.get("user_name"))
-            ig_link= get_ig_link(u)
-            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>) — {mention}")
+            ig_link = get_ig_link(u)
+            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
 
     bot.reply_to(message, "\n".join(lines))
 

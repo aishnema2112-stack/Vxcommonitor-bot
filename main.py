@@ -107,7 +107,7 @@ def get_default_db_data():
         "channels": [
             {"id": "c1", "name": "Jyoex", "tag": "@jyoex", "link": "https://t.me/jyoex", "color": "📢"},
             {"id": "c2", "name": "Comchater", "tag": "@Comchater", "link": "https://t.me/Comchater", "color": "📢"},
-            {"id": "c3", "name": "Sell Hub", "tag": "@Foraremy", "link": "https://t.me/+gM43iG6v-vFmYjc1", "color": "📢"}
+            {"id": "c3", "name": "Sell Hub", "tag": "https://t.me/+gM43iG6v-vFmYjc1", "link": "https://t.me/+gM43iG6v-vFmYjc1", "color": "📢"}
         ],
         "media": {
             "force_join": {"type": "animation", "id": "https://media0.giphy.com/media/v1.Y2lkPTZjMDliOTUyemw2YjhhNWx5endhbGl5cmZ6dmJrYXhmNDZ0bDFmbmhwZmszNHd0eiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/1cGfefKF0bSSmzyThu/giphy.gif"},

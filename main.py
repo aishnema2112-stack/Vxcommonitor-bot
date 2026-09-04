@@ -10,8 +10,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 from telebot import types
 from datetime import datetime, timezone, timedelta
-import psycopg
-from psycopg.rows import dict_row
+import psycopg2
+from psycopg2.rows import dict_row
 
 # Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)

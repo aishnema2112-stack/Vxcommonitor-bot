@@ -11,6 +11,7 @@ import telebot
 from telebot import types
 from datetime import datetime, timezone, timedelta
 import psycopg2
+
 # Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -60,21 +61,24 @@ db_lock = threading.Lock()
 admin_state = {}
 user_message_history = {}
 
-# ----------------- NEON POSTGRESQL ENGINE (PSYCOPG v3) -----------------
+# ----------------- NEON POSTGRESQL ENGINE (PSYCOPG2) -----------------
 def get_db_connection():
     clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
-    return psycopg.connect(clean_url, autocommit=True)
+    return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
 
 def init_postgres():
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS bot_storage (
-                        key VARCHAR(50) PRIMARY KEY,
-                        data JSONB NOT NULL
-                    );
-                """)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_storage (
+                key VARCHAR(50) PRIMARY KEY,
+                data JSONB NOT NULL
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
         print("[DATABASE] Neon PostgreSQL Schema Verified & Initialized!", flush=True)
     except Exception as e:
         print(f"[DATABASE ERROR] Init failed: {e}", flush=True)
@@ -117,10 +121,12 @@ def load_db():
     default_data = get_default_db_data()
     with db_lock:
         try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT data FROM bot_storage WHERE key = 'main_config';")
-                    row = cur.fetchone()
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT data FROM bot_storage WHERE key = 'main_config';")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
             
             if row and row[0]:
                 data = row[0]
@@ -141,14 +147,17 @@ def save_db(data):
     with db_lock:
         try:
             json_payload = json.dumps(data, default=str)
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO bot_storage (key, data)
-                        VALUES ('main_config', %s)
-                        ON CONFLICT (key) DO UPDATE
-                        SET data = EXCLUDED.data;
-                    """, (json_payload,))
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO bot_storage (key, data)
+                VALUES ('main_config', %s)
+                ON CONFLICT (key) DO UPDATE
+                SET data = EXCLUDED.data;
+            """, (json_payload,))
+            conn.commit()
+            cur.close()
+            conn.close()
         except Exception as e:
             print(f"[DATABASE ERROR] Save failed: {e}", flush=True)
 
@@ -387,7 +396,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ROBUST INSTAGRAM SCRAPER ENGINE (NO API NEEDED) -----------------
+# ----------------- ROBUST INSTAGRAM SCRAPER ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
@@ -405,11 +414,9 @@ def check_single_account(username):
         
         if response.status_code == 200:
             html = response.text
-            # Check if account is suspended or not found
             if "Sorry, this page isn't available." in html or "The link you followed may be broken" in html:
                 return {"status": "BANNED", "followers": 0, "following": 0}
 
-            # Extract follower/following counts from OpenGraph meta description
             desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', html)
             if desc_match:
                 content = desc_match.group(1)
@@ -441,7 +448,7 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # Process Unban Monitors (/ub) -> Expecting ACTIVE
+            # Process Unban Monitors (/ub)
             unban_items = list(db.get("unban_monitors", {}).items())
             if unban_items:
                 for user, info in unban_items:
@@ -473,7 +480,7 @@ def monitor_loop():
                         save_db(db)
                     time.sleep(1)
 
-            # Process Ban Monitors (/b) -> Expecting BANNED
+            # Process Ban Monitors (/b)
             ban_items = list(db.get("ban_monitors", {}).items())
             if ban_items:
                 for user, info in ban_items:
@@ -1049,13 +1056,13 @@ def handle_status(message):
         for u, d in bans.items():
             t = format_time_taken(time.time() - d["start_time"])
             mention = get_user_mention(d.get("user_id"), d.get("user_name"))
-            ig_link = get_ig_link(u)
+            ig_link= get_ig_link(u)
             lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>) — {mention}")
 
     bot.reply_to(message, "\n".join(lines))
 
 @bot.message_handler(func=lambda msg: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
-def handle_unrecognized_input(message):
+def handle_unrecognized_input(message,):
     user = message.from_user
     register_user(user, message.chat.id)
     track_and_clean_spam(message.chat.id, user.id, message.message_id)
@@ -1079,7 +1086,7 @@ def handle_unrecognized_input(message):
         "<b>Instagram Monitor Bot 24x7</b>\n"
         "<b>Want Subscription?</b>\n\n"
         f"Hey {mention},\n"
-        f"Send your ID (<code>{user.id}</code>) to owner to claim your Paid subscription."
+        f"Send your ID (<code>{user.id}</code>) token to owner to claim your Paid subscription."
     )
 
     markup = types.InlineKeyboardMarkup(row_width=1)

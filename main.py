@@ -396,40 +396,50 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ACCURATE INSTAGRAM SCRAPER ENGINE -----------------
+# ----------------- ROBUST JSON INSTAGRAM SCRAPER ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-User": "?1",
-        "Sec-Fetch-Dest": "document"
+        "X-Requested-With": "XMLHttpRequest"
     }
 
     try:
-        url = f"https://www.instagram.com/{username}/"
+        url = f"https://www.instagram.com/{username}/?__a=1&__d=dis"
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code in (404, 410, 403):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
         if response.status_code == 200:
-            html = response.text
+            text = response.text
             
-            if any(kw in html for kw in ["Sorry, this page isn't available.", "The link you followed may be broken", "page isn't available"]):
+            if any(kw in text for kw in ["Sorry, this page isn't available.", "The link you followed may be broken"]):
                 return {"status": "BANNED", "followers": 0, "following": 0}
 
-            desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', html)
+            try:
+                data = response.json()
+                user = data.get("graphql", {}).get("user", {}) or data.get("seo_category_info", {})
+                if user:
+                    followers = user.get("edge_followed_by", {}).get("count", 0)
+                    following = user.get("edge_follow", {}).get("count", 0)
+                    return {
+                        "status": "ACTIVE",
+                        "followers": followers,
+                        "following": following
+                    }
+            except Exception:
+                pass
+
+            desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', text)
             if desc_match:
                 content = desc_match.group(1)
                 counts = re.findall(r'([\d\.,kKmM]+)\s+(?:Followers|Following)', content)
-                
                 if counts or "Followers" in content:
                     followers = counts[0] if len(counts) > 0 else "0"
                     following = counts[1] if len(counts) > 1 else "0"
@@ -438,10 +448,9 @@ def check_single_account(username):
                         "followers": followers,
                         "following": following
                     }
-            
-            if "<title>Instagram</title>" in html or "Instagram photos and videos" in html:
-                if "Followers" not in html and "following" not in html:
-                    return {"status": "BANNED", "followers": 0, "following": 0}
+
+            if "Followers" not in text and "following" not in text and "<title>Instagram</title>" in text:
+                return {"status": "BANNED", "followers": 0, "following": 0}
 
             return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
 
@@ -1059,7 +1068,7 @@ def handle_status(message):
     unbans = db.get("unban_monitors", {})
     bans = db.get("ban_monitors", {})
 
-    # Filter only requests made by THIS specific user
+    # Filter only requests made by THIS specific user for privacy
     user_unbans = {u: d for u, d in unbans.items() if d.get("user_id") == user_id}
     user_bans = {u: d for u, d in bans.items() if d.get("user_id") == user_id}
 
@@ -1135,5 +1144,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("[INIT] Dual Tracker Bot is active and running with Robust Scraper Engine...", flush=True)
+    print("[INIT] Dual Tracker Bot is active and running with Robust JSON Scraper Engine...", flush=True)
     run_bot_polling()

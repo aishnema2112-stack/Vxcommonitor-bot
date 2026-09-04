@@ -396,67 +396,95 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- FIXED & ACCURATE STABLE SCRAPER ENGINE -----------------
+# ----------------- ACCURATE INSTAGRAM SCRAPER ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-User": "?1",
-        "Sec-Fetch-Dest": "document"
+    session = requests.Session()
+
+    # Step 1: Query Instagram Internal Web API
+    api_headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "X-IG-App-ID": "936619743392459",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://www.instagram.com/{username}/"
+    }
+
+    try:
+        api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+        r_api = session.get(api_url, headers=api_headers, timeout=6)
+        
+        if r_api.status_code == 200:
+            data = r_api.json()
+            user_data = data.get("data", {}).get("user")
+            if user_data:
+                followers = user_data.get("edge_followed_by", {}).get("count", "0")
+                following = user_data.get("edge_follow", {}).get("count", "0")
+                return {
+                    "status": "ACTIVE",
+                    "followers": followers,
+                    "following": following
+                }
+            else:
+                return {"status": "BANNED", "followers": 0, "following": 0}
+        elif r_api.status_code in (404, 410):
+            return {"status": "BANNED", "followers": 0, "following": 0}
+    except Exception:
+        pass
+
+    # Step 2: Fallback Web HTML Validation
+    web_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
     }
 
     try:
         url = f"https://www.instagram.com/{username}/"
-        response = requests.get(url, headers=headers, timeout=10)
+        response = session.get(url, headers=web_headers, timeout=8)
         
-        # If rate-limited or blocked, avoid false BANNED status by treating as UNKNOWN/ACTIVE cautiously
-        if response.status_code in (429, 403):
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
-
         if response.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
-        if response.status_code == 200:
-            html = response.text
-            
-            # Strict check for dead / banned pages
-            if any(kw in html for kw in ["Sorry, this page isn't available.", "The link you followed may be broken"]):
-                return {"status": "BANNED", "followers": 0, "following": 0}
+        html = response.text
 
-            desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', html)
-            if desc_match:
-                content = desc_match.group(1)
-                counts = re.findall(r'([\d\.,kKmM]+)\s+(?:Followers|Following)', content)
-                
-                if counts or "Followers" in content or "Posts" in content:
-                    followers = counts[0] if len(counts) > 0 else "0"
-                    following = counts[1] if len(counts) > 1 else "0"
-                    return {
-                        "status": "ACTIVE",
-                        "followers": followers,
-                        "following": following
-                    }
-            
-            # If standard meta description isn't found but page is loaded
-            if "<title>Instagram</title>" in html or "Instagram photos and videos" in html:
-                if "Followers" not in html and "following" not in html and "Posts" not in html:
-                    # Only mark banned if explicitly showing unavailability text
-                    if "isn't available" in html or "broken" in html:
-                        return {"status": "BANNED", "followers": 0, "following": 0}
+        # Strict banned check indicators
+        dead_indicators = [
+            "Sorry, this page isn't available.",
+            "The link you followed may be broken",
+            "Page Not Found &bull; Instagram",
+            "Page Not Found"
+        ]
+        if any(kw in html for kw in dead_indicators):
+            return {"status": "BANNED", "followers": 0, "following": 0}
 
+        desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', html)
+        if desc_match:
+            content = desc_match.group(1)
+            counts = re.findall(r'([\d\.,kKmM]+)\s+(?:Followers|Following)', content)
+            if counts:
+                followers = counts[0] if len(counts) > 0 else "0"
+                following = counts[1] if len(counts) > 1 else "0"
+                return {
+                    "status": "ACTIVE",
+                    "followers": followers,
+                    "following": following
+                }
+            if "Followers" in content or "Following" in content:
+                return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+
+        # Check for profile JSON blob inside HTML
+        if f'\\"username\\":\\"{username}\\"' in html or f'"username":"{username}"' in html:
             return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
 
-        else:
+        # If it returned generic login / dead template with no account info
+        if "<title>Instagram</title>" in html and "Followers" not in html:
             return {"status": "BANNED", "followers": 0, "following": 0}
+
+        return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
 
     except Exception as e:
         print(f"[SCRAPER ERROR] {e}", flush=True)
@@ -1134,13 +1162,13 @@ def handle_unrecognized_input(message):
 def run_bot_polling():
     while True:
         try:
+            print("[BOT] Clearing webhooks and starting Polling...", flush=True)
             bot.remove_webhook()
-            time.sleep(1)
-            print("[BOT] Starting TeleBot Polling...", flush=True)
-            bot.infinity_polling(timeout=20, long_polling_timeout=15, skip_pending=True, none_stop=True)
+            time.sleep(2)
+            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True, none_stop=True)
         except Exception as e:
-            print(f"[BOT ERROR] Polling interrupted: {e}. Reconnecting in 3s...", flush=True)
-            time.sleep(3)
+            print(f"[BOT ERROR] Polling conflict/interrupted: {e}. Reconnecting in 5s...", flush=True)
+            time.sleep(5)
 
 if __name__ == "__main__":
     _verify_integrity()

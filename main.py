@@ -403,9 +403,11 @@ def check_single_account(username):
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
         "Sec-Fetch-Site": "none",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-User": "?1",
@@ -416,7 +418,11 @@ def check_single_account(username):
         url = f"https://www.instagram.com/{username}/"
         response = requests.get(url, headers=headers, timeout=10)
         
-        if response.status_code in (404, 410, 403):
+        # If rate-limited or blocked, avoid false BANNED status by treating as UNKNOWN/ACTIVE cautiously
+        if response.status_code in (429, 403):
+            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+
+        if response.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
         if response.status_code == 200:
@@ -440,9 +446,12 @@ def check_single_account(username):
                         "following": following
                     }
             
+            # If standard meta description isn't found but page is loaded
             if "<title>Instagram</title>" in html or "Instagram photos and videos" in html:
                 if "Followers" not in html and "following" not in html and "Posts" not in html:
-                    return {"status": "BANNED", "followers": 0, "following": 0}
+                    # Only mark banned if explicitly showing unavailability text
+                    if "isn't available" in html or "broken" in html:
+                        return {"status": "BANNED", "followers": 0, "following": 0}
 
             return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
 
@@ -1060,7 +1069,6 @@ def handle_status(message):
     unbans = db.get("unban_monitors", {})
     bans = db.get("ban_monitors", {})
 
-    # Filter only requests made by THIS specific user for privacy
     user_unbans = {u: d for u, d in unbans.items() if d.get("user_id") == user_id}
     user_bans = {u: d for u, d in bans.items() if d.get("user_id") == user_id}
 

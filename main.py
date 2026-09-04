@@ -139,7 +139,6 @@ def load_db():
                 if isinstance(data, str):
                     data = json.loads(data)
                 
-                # Force clean override for fixed clean layout
                 data["channels"] = default_data["channels"]
                 data["buttons"] = default_data["buttons"]
 
@@ -345,12 +344,10 @@ def get_missing_channels(user_id):
 
 def build_force_join_markup():
     markup = types.InlineKeyboardMarkup(row_width=1)
-    # Add forced join public channels
     for ch in db.get("channels", []):
         btn_label = f"{ch.get('color', '📢')} {ch['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=ch["link"]))
     
-    # Add additional external buttons (Sell Hub private link)
     for btn in db.get("buttons", []):
         btn_label = f"{btn.get('color', '📢')} {btn['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=btn["link"]))
@@ -1208,12 +1205,12 @@ def handle_unrecognized_input(message):
 def run_bot_polling():
     while True:
         try:
-            print("[BOT] Clearing webhooks and starting Polling...", flush=True)
+            print("[BOT] Clearing previous webhooks and starting Polling safely...", flush=True)
             bot.remove_webhook()
-            time.sleep(2)
-            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True, none_stop=True)
+            time.sleep(3)
+            bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True, none_stop=True)
         except Exception as e:
-            print(f"[BOT ERROR] Polling conflict/interrupted: {e}. Reconnecting in 5s...", flush=True)
+            print(f"[BOT ERROR] Polling interrupted: {e}. Reconnecting in 5s...", flush=True)
             time.sleep(5)
 
 if __name__ == "__main__":

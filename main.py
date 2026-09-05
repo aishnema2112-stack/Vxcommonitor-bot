@@ -419,7 +419,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- DYNAMIC & ACCURATE INSTAGRAM ENGINE -----------------
+# ----------------- DYNAMIC & ACCURATE INSTAGRAM ENGINE (STRICT CHECK) -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
@@ -451,29 +451,8 @@ def check_single_account(username):
                     "followers": followers,
                     "following": following
                 }
-            return {"status": "BANNED", "followers": 0, "following": 0}
         elif r_api.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
-    except Exception:
-        pass
-
-    try:
-        embed_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-        embed_url = f"https://www.instagram.com/{username}/embed/"
-        r_embed = requests.get(embed_url, headers=embed_headers, timeout=6)
-        
-        if r_embed.status_code in (404, 410):
-            return {"status": "BANNED", "followers": 0, "following": 0}
-            
-        embed_text = r_embed.text
-        if any(err in embed_text for err in ["Page Not Found", "unavailable", "The link you followed may be broken"]):
-            return {"status": "BANNED", "followers": 0, "following": 0}
-
-        if "View profile" in embed_text or "Watch on Instagram" in embed_text:
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
     except Exception:
         pass
 
@@ -499,11 +478,13 @@ def check_single_account(username):
                     "following": counts[1]
                 }
 
-        return {"status": "BANNED", "followers": 0, "following": 0}
+        if r_web.status_code == 200 and "instagram" in web_html.lower():
+            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
 
     except Exception as e:
         print(f"[SCRAPER EXCEPTION] {e}", flush=True)
-        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
 def get_instagram_details(username):
     return check_single_account(username)

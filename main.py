@@ -419,7 +419,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- DYNAMIC & ACCURATE INSTAGRAM ENGINE (STRICT CHECK) -----------------
+# ----------------- DYNAMIC & ACCURATE INSTAGRAM ENGINE (ANTI-FALSE-POSITIVE) -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
@@ -437,6 +437,7 @@ def check_single_account(username):
         "Referer": f"https://www.instagram.com/{username}/"
     }
 
+    # 1. API check
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
         r_api = requests.get(api_url, headers=headers, cookies=cookies, timeout=5)
@@ -456,6 +457,7 @@ def check_single_account(username):
     except Exception:
         pass
 
+    # 2. Web HTML Strict Validation Check
     try:
         web_url = f"https://www.instagram.com/{username}/"
         r_web = requests.get(web_url, headers=headers, cookies=cookies, timeout=6, allow_redirects=True)
@@ -464,9 +466,12 @@ def check_single_account(username):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
         web_html = r_web.text
+        
+        # Absolute Banned Indicators
         if any(err in web_html for err in ["Sorry, this page isn't available.", "The link you followed may be broken", "Page Not Found"]):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
+        # Extract counts from meta tags
         desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', web_html)
         if desc_match:
             content = desc_match.group(1)
@@ -478,8 +483,10 @@ def check_single_account(username):
                     "following": counts[1]
                 }
 
-        if r_web.status_code == 200 and "instagram" in web_html.lower():
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+        # Strict check to prevent false positives from blank/rate-limited responses
+        if r_web.status_code == 200 and ("og:title" in web_html or "profile_page" in web_html or f'"{username}"' in web_html):
+            if "login" not in web_html.lower() and "signup" not in web_html.lower():
+                return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
 
     except Exception as e:
         print(f"[SCRAPER EXCEPTION] {e}", flush=True)
@@ -489,7 +496,7 @@ def check_single_account(username):
 def get_instagram_details(username):
     return check_single_account(username)
 
-# ----------------- BACKGROUND MONITOR LOOP -----------------
+# ----------------- BACKGROUND MONITOR LOOP (WITH DOUBLE-VERIFICATION) -----------------
 def monitor_loop():
     while True:
         try:
@@ -500,30 +507,35 @@ def monitor_loop():
                 for user, info in unban_items:
                     res = check_single_account(user)
                     if res["status"] == "ACTIVE":
-                        elapsed = time.time() - info.get("start_time", time.time())
-                        time_str = format_time_taken(elapsed)
-                        f_by = format_count(res["followers"])
-                        f_to = format_count(res["following"])
-                        user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
-                        ig_link = get_ig_link(user)
+                        # Double verification delay to stop false alerts
+                        time.sleep(4)
+                        recheck = check_single_account(user)
+                        
+                        if recheck["status"] == "ACTIVE":
+                            elapsed = time.time() - info.get("start_time", time.time())
+                            time_str = format_time_taken(elapsed)
+                            f_by = format_count(recheck["followers"])
+                            f_to = format_count(recheck["following"])
+                            user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                            ig_link = get_ig_link(user)
 
-                        caption = (
-                            "🎉 <b>Instagram Account Recovered</b>\n\n"
-                            f"Target: <b>{ig_link}</b>\n"
-                            f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
-                            f"Time Taken: <code>{time_str}</code>\n"
-                            f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
-                            f"👤 Requested by: {user_mention}"
-                        )
+                            caption = (
+                                "🎉 <b>Instagram Account Recovered</b>\n\n"
+                                f"Target: <b>{ig_link}</b>\n"
+                                f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                                f"Time Taken: <code>{time_str}</code>\n"
+                                f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
+                                f"👤 Requested by: {user_mention}"
+                            )
 
-                        sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
-                        try:
-                            bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
-                        except Exception:
-                            pass
+                            sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
+                            try:
+                                bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
+                            except Exception:
+                                pass
 
-                        db["unban_monitors"].pop(user, None)
-                        save_db(db)
+                            db["unban_monitors"].pop(user, None)
+                            save_db(db)
                     time.sleep(2)
 
             ban_items = list(db.get("ban_monitors", {}).items())
@@ -531,7 +543,7 @@ def monitor_loop():
                 for user, info in ban_items:
                     res = check_single_account(user)
                     if res["status"] == "BANNED":
-                        time.sleep(3)
+                        time.sleep(4)
                         recheck = check_single_account(user)
                         if recheck["status"] == "BANNED":
                             elapsed = time.time() - info.get("start_time", time.time())

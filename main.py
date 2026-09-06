@@ -410,7 +410,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ACCURATE INSTAGRAM ENGINE (WITH 100% RELIABLE STATUS DETECTION) -----------------
+# ----------------- ORIGINAL SMOOTH INSTAGRAM ENGINE RESTORED -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
@@ -421,28 +421,65 @@ def check_single_account(username):
         cookies["sessionid"] = INSTAGRAM_SESSION_ID
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Referer": "https://www.instagram.com/"
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "X-IG-App-ID": "936619743392459",
+        "X-ASBD-ID": "129477",
+        "Accept": "*/*",
+        "Referer": f"https://www.instagram.com/{username}/"
     }
 
     try:
+        api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+        r_api = requests.get(api_url, headers=headers, cookies=cookies, timeout=5)
+        if r_api.status_code == 200:
+            data = r_api.json()
+            user_data = data.get("data", {}).get("user")
+            if user_data and user_data.get("id"):
+                followers = user_data.get("edge_followed_by", {}).get("count", 0)
+                following = user_data.get("edge_follow", {}).get("count", 0)
+                return {
+                    "status": "ACTIVE",
+                    "followers": followers,
+                    "following": following
+                }
+            return {"status": "BANNED", "followers": 0, "following": 0}
+        elif r_api.status_code in (404, 410):
+            return {"status": "BANNED", "followers": 0, "following": 0}
+    except Exception:
+        pass
+
+    try:
+        embed_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        embed_url = f"https://www.instagram.com/{username}/embed/"
+        r_embed = requests.get(embed_url, headers=embed_headers, timeout=6)
+        
+        if r_embed.status_code in (404, 410):
+            return {"status": "BANNED", "followers": 0, "following": 0}
+            
+        embed_text = r_embed.text
+        if any(err in embed_text for err in ["Page Not Found", "unavailable", "The link you followed may be broken"]):
+            return {"status": "BANNED", "followers": 0, "following": 0}
+
+        if "View profile" in embed_text or "Watch on Instagram" in embed_text:
+            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+    except Exception:
+        pass
+
+    try:
         web_url = f"https://www.instagram.com/{username}/"
-        r = requests.get(web_url, headers=headers, cookies=cookies, timeout=8, allow_redirects=True)
+        r_web = requests.get(web_url, headers=headers, cookies=cookies, timeout=6, allow_redirects=True)
         
-        # Agar HTTP 404 ya 410 hai toh definitely BANNED
-        if r.status_code in (404, 410):
+        if r_web.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
-        html = r.text
-        
-        # Agar Instagram ka official "Page Not Found" ya "Unavailable" text hai
-        if any(err in html for err in ["Sorry, this page isn't available.", "The link you followed may be broken", "Page Not Found", "IgCorePageUnavailable"]):
+        web_html = r_web.text
+        if any(err in web_html for err in ["Sorry, this page isn't available.", "The link you followed may be broken", "Page Not Found"]):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
-        # Agar profile active hai toh og:description se followers/following nikal lo
-        desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', html)
+        desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', web_html)
         if desc_match:
             content = desc_match.group(1)
             counts = re.findall(r'([\d\.,kKmM]+)\s+(?:Followers|Following)', content)
@@ -453,14 +490,11 @@ def check_single_account(username):
                     "following": counts[1]
                 }
 
-        # Agar page 200 OK hai aur profile elements maujud hain
-        if r.status_code == 200 and f'"{username}"' in html.lower() and "login" not in html.lower():
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+        return {"status": "BANNED", "followers": 0, "following": 0}
 
     except Exception as e:
-        print(f"[SCRAPER ERROR] {e}", flush=True)
-
-    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+        print(f"[SCRAPER EXCEPTION] {e}", flush=True)
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
 def get_instagram_details(username):
     return check_single_account(username)
@@ -471,42 +505,37 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # 1. Unban Monitors (/ub)
             unban_items = list(db.get("unban_monitors", {}).items())
             if unban_items:
                 for user, info in unban_items:
                     res = check_single_account(user)
                     if res["status"] == "ACTIVE":
-                        time.sleep(3)
-                        recheck = check_single_account(user)
-                        if recheck["status"] == "ACTIVE":
-                            elapsed = time.time() - info.get("start_time", time.time())
-                            time_str = format_time_taken(elapsed)
-                            f_by = format_count(recheck["followers"])
-                            f_to = format_count(recheck["following"])
-                            user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
-                            ig_link = get_ig_link(user)
+                        elapsed = time.time() - info.get("start_time", time.time())
+                        time_str = format_time_taken(elapsed)
+                        f_by = format_count(res["followers"])
+                        f_to = format_count(res["following"])
+                        user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                        ig_link = get_ig_link(user)
 
-                            caption = (
-                                "🎉 <b>Instagram Account Recovered</b>\n\n"
-                                f"Target: <b>{ig_link}</b>\n"
-                                f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
-                                f"Time Taken: <code>{time_str}</code>\n"
-                                f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
-                                f"👤 Requested by: {user_mention}"
-                            )
+                        caption = (
+                            "🎉 <b>Instagram Account Recovered</b>\n\n"
+                            f"Target: <b>{ig_link}</b>\n"
+                            f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                            f"Time Taken: <code>{time_str}</code>\n"
+                            f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
+                            f"👤 Requested by: {user_mention}"
+                        )
 
-                            sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
-                            try:
-                                bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
-                            except Exception:
-                                pass
+                        sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
+                        try:
+                            bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
+                        except Exception:
+                            pass
 
-                            db["unban_monitors"].pop(user, None)
-                            save_db(db)
+                        db["unban_monitors"].pop(user, None)
+                        save_db(db)
                     time.sleep(2)
 
-            # 2. Ban Monitors (/b)
             ban_items = list(db.get("ban_monitors", {}).items())
             if ban_items:
                 for user, info in ban_items:
@@ -548,7 +577,7 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
-# ----------------- ADMIN DASHBOARD & COMMAND HANDLERS -----------------
+# ----------------- ADMIN DASHBOARD & CLAIM HANDLERS -----------------
 def get_admin_panel_markup():
     m_status = "🟢 ON" if db.get("settings", {}).get("maintenance", False) else "⚪ OFF"
     n_status = "🔔 ON" if db.get("settings", {}).get("new_user_notify", True) else "🔕 OFF"
@@ -612,7 +641,7 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-# ----------------- NEW: REMOVE MONITOR COMMAND (/r username) -----------------
+# ----------------- REMOVE MONITOR COMMAND (/r username) -----------------
 @bot.message_handler(commands=['r', 'remove_monitor'])
 def handle_remove_monitor(message):
     if not check_access(message):
@@ -1035,10 +1064,9 @@ def handle_unban_request(message):
     status_data = check_single_account(username)
     if status_data["status"] == "ACTIVE":
         caption = (
-            f"ℹ️ <b>{ig_link}</b> is already active (not banned).\n\n"
+            f"ℹ️ <b>{ig_link}</b> is already active.\n\n"
             f"👤 Requested by: {user_mention}"
         )
-        # Deny notification without auto-delete
         send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
         return
 
@@ -1093,7 +1121,6 @@ def handle_ban_request(message):
             f"ℹ️ <b>{ig_link}</b> is already banned or unavailable.\n\n"
             f"👤 Requested by: {user_mention}"
         )
-        # Deny notification without auto-delete
         send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
         return
 

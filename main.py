@@ -623,9 +623,9 @@ def handle_remove_admin(message):
 
     if removed:
         save_db(db)
-        bot.reply_to(message, "✅ <b>Successfully Removed!</b>\nAapko Admin/Premium position se hata diya gaya hai.")
+        bot.reply_to(message, "✅ <b>Successfully Removed!</b>\nYou have been removed from the Admin/Premium position.")
     else:
-        bot.reply_to(message, "ℹ️ Aapke paas koi Admin ya Premium position nahi hai.")
+        bot.reply_to(message, "ℹ️ You do not currently have any Admin or Premium position.")
 
 @bot.message_handler(commands=['admin'])
 def handle_admin(message):
@@ -665,9 +665,9 @@ def handle_remove_monitor(message):
 
     if removed:
         save_db(db)
-        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> ko monitoring list se hata diya gaya hai.")
+        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> has been removed from the monitoring list.")
     else:
-        bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> active monitoring list mein nahi mila.")
+        bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> was not found in the active monitoring list.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("see_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
@@ -922,18 +922,18 @@ def process_admin_inputs(message):
             if user_id not in db["admins"]:
                 db.setdefault("admins", []).append(user_id)
                 save_db(db)
-            bot.reply_to(message, "👑 <b>Admin Password Verified!</b>\nAapko master admin bana diya gaya hai. Send <code>/admin</code> to open panel.")
+            bot.reply_to(message, "👑 <b>Admin Password Verified!</b>\nYou have been made the master admin. Send <code>/admin</code> to open panel.")
             return
 
         elif entered_pass == PREMIUM_PASSWORD:
             if db.get("premium_pass_claimed", False):
-                bot.reply_to(message, "❌ <b>Password Already Claimed!</b>\nYeh password already kisi user dwara claim kiya ja chuka hai.")
+                bot.reply_to(message, "❌ <b>Password Already Claimed!</b>\nThis password has already been claimed by another user.")
                 return
 
             db.setdefault("premium_users", []).append(user_id)
             db["premium_pass_claimed"] = True
             save_db(db)
-            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nAapko Premium User privileges mil gayi hain. Ab aap bina kisi restriction ke <code>/ub</code>, <code>/b</code>, aur <code>/status</code> use kar sakte hain.")
+            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nYou have received Premium User privileges. Now you can use <code>/ub</code>, <code>/b</code>, and <code>/status</code> without any restrictions.")
             return
 
         else:
@@ -1106,135 +1106,4 @@ def handle_ban_request(message):
     user_mention = get_user_mention(user_id, user_name)
 
     if not username:
-        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/b username</code>\n<b>Example:</b> <code>/b gt5available</code>")
-        return
-
-    ig_link = get_ig_link(username)
-
-    if username in db.get("ban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
-        return
-
-    status_data = check_single_account(username)
-    if status_data["status"] == "BANNED":
-        caption = (
-            f"ℹ️ <b>{ig_link}</b> is already banned or unavailable.\n\n"
-            f"👤 Requested by: {user_mention}"
-        )
-        send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
-        return
-
-    req_time = get_current_time_str()
-    req_date = get_current_date_str()
-
-    db.setdefault("ban_monitors", {})[username] = {
-        "chat_id": message.chat.id,
-        "user_id": user_id,
-        "user_name": user_name,
-        "followers": status_data["followers"],
-        "following": status_data["following"],
-        "start_time": time.time(),
-        "requested_time": req_time,
-        "requested_date": req_date
-    }
-    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
-    if str(user_id) in db.get("users", {}):
-        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
-    save_db(db)
-
-    caption = (
-        "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
-        f"Target: <b>{ig_link}</b>\n"
-        f"Current Status: <code>Active</code>\n"
-        "You'll be notified as soon as the account is banned.\n\n"
-        f"👤 Requested by: {user_mention}"
-    )
-
-    send_custom_media(message.chat.id, "b_req", caption, reply_to=message.message_id)
-
-@bot.message_handler(commands=['status', 's'])
-def handle_status(message):
-    if not check_access(message):
-        return
-
-    user_id = message.from_user.id
-    unbans = db.get("unban_monitors", {})
-    bans = db.get("ban_monitors", {})
-
-    user_unbans = {u: d for u, d in unbans.items() if d.get("user_id") == user_id}
-    user_bans = {u: d for u, d in bans.items() if d.get("user_id") == user_id}
-
-    if not user_unbans and not user_bans:
-        bot.reply_to(message, "ℹ️ You have no active accounts currently in your monitoring list.")
-        return
-
-    lines = ["📊 <b>Your Active Monitors</b>\n"]
-    if user_unbans:
-        lines.append("<b>Awaiting Recovery (/ub):</b>")
-        for u, d in user_unbans.items():
-            t = format_time_taken(time.time() - d["start_time"])
-            ig_link = get_ig_link(u)
-            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
-
-    if user_bans:
-        lines.append("\n<b>Awaiting Ban (/b):</b>")
-        for u, d in user_bans.items():
-            t = format_time_taken(time.time() - d["start_time"])
-            ig_link = get_ig_link(u)
-            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
-
-    bot.reply_to(message, "\n".join(lines))
-
-@bot.message_handler(func=lambda msg: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
-def handle_unrecognized_input(message):
-    user = message.from_user
-    register_user(user, message.chat.id)
-    track_and_clean_spam(message.chat.id, user.id, message.message_id)
-
-    if message.chat.type != "private":
-        return
-
-    missing = get_missing_channels(user.id)
-    if missing and not (is_admin_or_owner(user.id) or is_premium_user(user.id)):
-        mention = get_user_mention(user.id, user.first_name)
-        text = (
-            "⚠️ <b>Access Restricted</b>\n\n"
-            f"Hello {mention}, you must join all our required official channels below to access this bot:\n\n"
-            "<i>Click each channel to join, then tap Verify:</i>"
-        )
-        send_custom_media(message.chat.id, "force_join", text, reply_to=message.message_id, reply_markup=build_force_join_markup())
-        return
-
-    mention = get_user_mention(user.id, user.first_name)
-    sub_text = (
-        "<b>Instagram Monitor Bot 24x7</b>\n"
-        "<b>Want Subscription?</b>\n\n"
-        f"Hey {mention},\n"
-        f"Send your ID (<code>{user.id}</code>) token to owner to claim your Paid subscription."
-    )
-
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        types.InlineKeyboardButton("Contact Owner", url="https://t.me/talkwithhimbot"),
-        types.InlineKeyboardButton("Join Main Channel", url="https://t.me/+ObinPrPz_ktkODJl")
-    )
-
-    sent = send_custom_media(message.chat.id, "subscription", sub_text, reply_to=message.message_id, reply_markup=markup)
-    if sent:
-        auto_delete_after_delay(message.chat.id, sent.message_id, delay_seconds=300)
-
-def run_bot_polling():
-    while True:
-        try:
-            print("[BOT] Clearing previous webhooks and starting Polling safely...", flush=True)
-            bot.remove_webhook()
-            time.sleep(3)
-            bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True)
-        except Exception as e:
-            print(f"[BOT ERROR] Polling interrupted: {e}. Reconnecting in 5s...", flush=True)
-            time.sleep(5)
-
-if __name__ == "__main__":
-    _verify_integrity()
-    print("[INIT] Dual Tracker Bot is active and running with 100% Stable Scraper Engine...", flush=True)
-    run_bot_polling()
+        bot.reply_to

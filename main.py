@@ -641,7 +641,7 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-# ----------------- REMOVE MONITOR COMMAND (/r username) [ENGLISH UPDATE] -----------------
+# ----------------- REMOVE MONITOR COMMAND (/r username) [ENGLISH] -----------------
 @bot.message_handler(commands=['r', 'remove_monitor'])
 def handle_remove_monitor(message):
     if not check_access(message):
@@ -1226,4 +1226,15 @@ def handle_unrecognized_input(message):
 def run_bot_polling():
     while True:
         try:
-            print("[BOT] Clearing previous webhooks and starting Polling safely...", flush=
+            print("[BOT] Clearing previous webhooks and starting Polling safely...", flush=True)
+            bot.remove_webhook()
+            time.sleep(3)
+            bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True)
+        except Exception as e:
+            print(f"[BOT ERROR] Polling interrupted: {e}. Reconnecting in 5s...", flush=True)
+            time.sleep(5)
+
+if __name__ == "__main__":
+    _verify_integrity()
+    print("[INIT] Dual Tracker Bot is active and running with 100% Stable Scraper Engine...", flush=True)
+    run_bot_polling()

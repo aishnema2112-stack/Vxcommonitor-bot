@@ -255,6 +255,15 @@ def track_and_clean_spam(chat_id, user_id, message_id):
         except Exception:
             pass
 
+def auto_delete_after_delay(chat_id, message_id, delay_seconds=300):
+    def delete_worker():
+        time.sleep(delay_seconds)
+        try:
+            bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+    threading.Thread(target=delete_worker, daemon=True).start()
+
 def format_count(count):
     if isinstance(count, str):
         count_clean = count.replace(",", "").strip()
@@ -623,9 +632,9 @@ def handle_remove_admin(message):
 
     if removed:
         save_db(db)
-        bot.reply_to(message, "✅ <b>Successfully Removed!</b>\nYou have been removed from the Admin/Premium position.")
+        bot.reply_to(message, "✅ <b>Successfully Removed!</b>\nAapko Admin/Premium position se hata diya gaya hai.")
     else:
-        bot.reply_to(message, "ℹ️ You do not currently have any Admin or Premium position.")
+        bot.reply_to(message, "ℹ️ Aapke paas koi Admin ya Premium position nahi hai.")
 
 @bot.message_handler(commands=['admin'])
 def handle_admin(message):
@@ -665,9 +674,9 @@ def handle_remove_monitor(message):
 
     if removed:
         save_db(db)
-        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> has been removed from the monitoring list.")
+        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> has been removed from monitoring list.")
     else:
-        bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> was not found in the active monitoring list.")
+        bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> was not found in active monitoring list.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("see_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
@@ -922,18 +931,18 @@ def process_admin_inputs(message):
             if user_id not in db["admins"]:
                 db.setdefault("admins", []).append(user_id)
                 save_db(db)
-            bot.reply_to(message, "👑 <b>Admin Password Verified!</b>\nYou have been made the master admin. Send <code>/admin</code> to open panel.")
+            bot.reply_to(message, "👑 <b>Admin Password Verified!</b>\nAapko master admin bana diya gaya hai. Send <code>/admin</code> to open panel.")
             return
 
         elif entered_pass == PREMIUM_PASSWORD:
             if db.get("premium_pass_claimed", False):
-                bot.reply_to(message, "❌ <b>Password Already Claimed!</b>\nThis password has already been claimed by another user.")
+                bot.reply_to(message, "❌ <b>Password Already Claimed!</b>\nYeh password already kisi user dwara claim kiya ja chuka hai.")
                 return
 
             db.setdefault("premium_users", []).append(user_id)
             db["premium_pass_claimed"] = True
             save_db(db)
-            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nYou have received Premium User privileges. Now you can use <code>/ub</code>, <code>/b</code>, and <code>/status</code> without any restrictions.")
+            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nAapko Premium User privileges mil gayi hain. Ab aap bina kisi restriction ke <code>/ub</code>, <code>/b</code>, aur <code>/status</code> use kar sakte hain.")
             return
 
         else:
@@ -1042,68 +1051,4 @@ def handle_start_help(message):
     bot.reply_to(message, welcome_text)
 
 @bot.message_handler(commands=['ub', 'unban'])
-def handle_unban_request(message):
-    if not check_access(message):
-        return
-
-    username = extract_username(message)
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name or "User"
-    user_mention = get_user_mention(user_id, user_name)
-
-    if not username:
-        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/ub username</code>\n<b>Example:</b> <code>/ub gt5available</code>")
-        return
-
-    ig_link = get_ig_link(username)
-
-    if username in db.get("unban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
-        return
-
-    status_data = check_single_account(username)
-    if status_data["status"] == "ACTIVE":
-        caption = (
-            f"ℹ️ <b>{ig_link}</b> is already active.\n\n"
-            f"👤 Requested by: {user_mention}"
-        )
-        send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
-        return
-
-    req_time = get_current_time_str()
-    req_date = get_current_date_str()
-
-    db.setdefault("unban_monitors", {})[username] = {
-        "chat_id": message.chat.id,
-        "user_id": user_id,
-        "user_name": user_name,
-        "start_time": time.time(),
-        "requested_time": req_time,
-        "requested_date": req_date
-    }
-    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
-    if str(user_id) in db.get("users", {}):
-        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
-    save_db(db)
-
-    caption = (
-        "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
-        f"Target: <b>{ig_link}</b>\n"
-        "You'll be notified as soon as the account is active.\n\n"
-        f"👤 Requested by: {user_mention}"
-    )
-
-    send_custom_media(message.chat.id, "ub_req", caption, reply_to=message.message_id)
-
-@bot.message_handler(commands=['b', 'ban'])
-def handle_ban_request(message):
-    if not check_access(message):
-        return
-
-    username = extract_username(message)
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name or "User"
-    user_mention = get_user_mention(user_id, user_name)
-
-    if not username:
-        bot.reply_to
+def handle_unban

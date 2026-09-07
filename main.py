@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import io
+import random
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
@@ -56,11 +57,14 @@ threading.Thread(target=run_server, daemon=True).start()
 # ----------------- CONFIGURATION & CONSTANTS -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "")
+
+# Multi-session parsing (supports comma separated or single session ID)
+RAW_SESSIONS = os.environ.get("INSTAGRAM_SESSION_IDS", os.environ.get("INSTAGRAM_SESSION_ID", ""))
+SESSION_LIST = [s.strip() for s in RAW_SESSIONS.split(",") if s.strip()]
 
 ADMIN_PASSWORD = "mansour$vx"
 PREMIUM_PASSWORD = "Hamzai@1"
-CHECK_INTERVAL_SECONDS = 10
+CHECK_INTERVAL_SECONDS = 30
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -203,6 +207,15 @@ def is_admin_or_owner(user_id):
 
 def is_premium_user(user_id):
     return user_id in db.get("premium_users", []) or is_admin_or_owner(user_id)
+
+def auto_delete_after_delay(chat_id, message_id, delay_seconds=300):
+    def _delete():
+        time.sleep(delay_seconds)
+        try:
+            bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+    threading.Thread(target=_delete, daemon=True).start()
 
 def register_user(user, chat_id=None):
     user_id = str(user.id)
@@ -410,18 +423,14 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- ORIGINAL SMOOTH INSTAGRAM ENGINE -----------------
-def check_single_account(username):
-    username = username.strip().lower().replace("@", "")
-    if not username:
-        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
-
+# ----------------- SMART SCRAPER WITH DUAL SESSION VERIFICATION -----------------
+def _execute_api_check(username, session_id):
     cookies = {}
-    if INSTAGRAM_SESSION_ID:
-        cookies["sessionid"] = INSTAGRAM_SESSION_ID
+    if session_id:
+        cookies["sessionid"] = session_id
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
         "X-IG-App-ID": "936619743392459",
         "X-ASBD-ID": "129477",
         "Accept": "*/*",
@@ -430,74 +439,72 @@ def check_single_account(username):
 
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        r_api = requests.get(api_url, headers=headers, cookies=cookies, timeout=5)
-        if r_api.status_code == 200:
-            data = r_api.json()
+        r = requests.get(api_url, headers=headers, cookies=cookies, timeout=8)
+        if r.status_code == 200:
+            data = r.json()
             user_data = data.get("data", {}).get("user")
             if user_data and user_data.get("id"):
-                followers = user_data.get("edge_followed_by", {}).get("count", 0)
-                following = user_data.get("edge_follow", {}).get("count", 0)
                 return {
                     "status": "ACTIVE",
-                    "followers": followers,
-                    "following": following
+                    "followers": user_data.get("edge_followed_by", {}).get("count", 0),
+                    "following": user_data.get("edge_follow", {}).get("count", 0)
                 }
             return {"status": "BANNED", "followers": 0, "following": 0}
-        elif r_api.status_code in (404, 410):
+        elif r.status_code == 404:
             return {"status": "BANNED", "followers": 0, "following": 0}
     except Exception:
         pass
+    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
+def _execute_embed_check(username):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    }
     try:
-        embed_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
         embed_url = f"https://www.instagram.com/{username}/embed/"
-        r_embed = requests.get(embed_url, headers=embed_headers, timeout=6)
-        
-        if r_embed.status_code in (404, 410):
+        r = requests.get(embed_url, headers=headers, timeout=8)
+        if r.status_code == 404:
             return {"status": "BANNED", "followers": 0, "following": 0}
-            
-        embed_text = r_embed.text
+        embed_text = r.text
+        if "Watch on Instagram" in embed_text or "View profile" in embed_text:
+            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
         if any(err in embed_text for err in ["Page Not Found", "unavailable", "The link you followed may be broken"]):
             return {"status": "BANNED", "followers": 0, "following": 0}
-
-        if "View profile" in embed_text or "Watch on Instagram" in embed_text:
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
     except Exception:
         pass
+    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-    try:
-        web_url = f"https://www.instagram.com/{username}/"
-        r_web = requests.get(web_url, headers=headers, cookies=cookies, timeout=6, allow_redirects=True)
-        
-        if r_web.status_code in (404, 410):
-            return {"status": "BANNED", "followers": 0, "following": 0}
-
-        web_html = r_web.text
-        if any(err in web_html for err in ["Sorry, this page isn't available.", "The link you followed may be broken", "Page Not Found"]):
-            return {"status": "BANNED", "followers": 0, "following": 0}
-
-        desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', web_html)
-        if desc_match:
-            content = desc_match.group(1)
-            counts = re.findall(r'([\d\.,kKmM]+)\s+(?:Followers|Following)', content)
-            if len(counts) >= 2:
-                return {
-                    "status": "ACTIVE",
-                    "followers": counts[0],
-                    "following": counts[1]
-                }
-
-        return {"status": "BANNED", "followers": 0, "following": 0}
-
-    except Exception as e:
-        print(f"[SCRAPER EXCEPTION] {e}", flush=True)
+def check_single_account(username):
+    username = username.strip().lower().replace("@", "")
+    if not username:
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-def get_instagram_details(username):
-    return check_single_account(username)
+    # Pick 2 distinct session IDs if available
+    available_sessions = SESSION_LIST.copy() if SESSION_LIST else [""]
+    if len(available_sessions) >= 2:
+        chosen_sessions = random.sample(available_sessions, 2)
+    else:
+        chosen_sessions = available_sessions
+
+    results = []
+    for sess in chosen_sessions:
+        res = _execute_api_check(username, sess)
+        if res["status"] != "UNKNOWN":
+            results.append(res)
+        time.sleep(1)
+
+    # If both agreed on the status
+    if len(results) >= 2:
+        if results[0]["status"] == results[1]["status"]:
+            return results[0]
+
+    if len(results) == 1:
+        return results[0]
+
+    # Fallback to Embed Check
+    fallback = _execute_embed_check(username)
+    return fallback
 
 # ----------------- BACKGROUND MONITOR LOOP -----------------
 def monitor_loop():
@@ -505,15 +512,18 @@ def monitor_loop():
         try:
             _verify_integrity()
 
+            # Process Unban Monitors
             unban_items = list(db.get("unban_monitors", {}).items())
-            if unban_items:
-                for user, info in unban_items:
-                    res = check_single_account(user)
-                    if res["status"] == "ACTIVE":
+            for user, info in unban_items:
+                res = check_single_account(user)
+                if res["status"] == "ACTIVE":
+                    time.sleep(2)
+                    recheck = check_single_account(user)
+                    if recheck["status"] == "ACTIVE":
                         elapsed = time.time() - info.get("start_time", time.time())
                         time_str = format_time_taken(elapsed)
-                        f_by = format_count(res["followers"])
-                        f_to = format_count(res["following"])
+                        f_by = format_count(recheck.get("followers", res.get("followers", "N/A")))
+                        f_to = format_count(recheck.get("following", res.get("following", "N/A")))
                         user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
                         ig_link = get_ig_link(user)
 
@@ -534,41 +544,41 @@ def monitor_loop():
 
                         db["unban_monitors"].pop(user, None)
                         save_db(db)
-                    time.sleep(2)
+                time.sleep(3)
 
+            # Process Ban Monitors
             ban_items = list(db.get("ban_monitors", {}).items())
-            if ban_items:
-                for user, info in ban_items:
-                    res = check_single_account(user)
-                    if res["status"] == "BANNED":
-                        time.sleep(3)
-                        recheck = check_single_account(user)
-                        if recheck["status"] == "BANNED":
-                            elapsed = time.time() - info.get("start_time", time.time())
-                            time_str = format_time_taken(elapsed)
-                            f_by = format_count(info.get("followers", "N/A"))
-                            f_to = format_count(info.get("following", "N/A"))
-                            user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
-                            ig_link = get_ig_link(user)
+            for user, info in ban_items:
+                res = check_single_account(user)
+                if res["status"] == "BANNED":
+                    time.sleep(3)
+                    recheck = check_single_account(user)
+                    if recheck["status"] == "BANNED":
+                        elapsed = time.time() - info.get("start_time", time.time())
+                        time_str = format_time_taken(elapsed)
+                        f_by = format_count(info.get("followers", "N/A"))
+                        f_to = format_count(info.get("following", "N/A"))
+                        user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                        ig_link = get_ig_link(user)
 
-                            caption = (
-                                "🚫 <b>Instagram Account Banned</b>\n\n"
-                                f"Target: <b>{ig_link}</b>\n"
-                                f"Previous Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
-                                f"Time Taken: <code>{time_str}</code>\n"
-                                f"Banned at: <code>{get_current_time_str()}</code>\n\n"
-                                f"👤 Requested by: {user_mention}"
-                            )
+                        caption = (
+                            "🚫 <b>Instagram Account Banned</b>\n\n"
+                            f"Target: <b>{ig_link}</b>\n"
+                            f"Previous Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                            f"Time Taken: <code>{time_str}</code>\n"
+                            f"Banned at: <code>{get_current_time_str()}</code>\n\n"
+                            f"👤 Requested by: {user_mention}"
+                        )
 
-                            sent_msg = send_custom_media(info["chat_id"], "b_done", caption)
-                            try:
-                                bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
-                            except Exception:
-                                pass
+                        sent_msg = send_custom_media(info["chat_id"], "b_done", caption)
+                        try:
+                            bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
+                        except Exception:
+                            pass
 
-                            db["ban_monitors"].pop(user, None)
-                            save_db(db)
-                    time.sleep(2)
+                        db["ban_monitors"].pop(user, None)
+                        save_db(db)
+                time.sleep(3)
 
             time.sleep(CHECK_INTERVAL_SECONDS)
         except Exception as e:
@@ -641,7 +651,7 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-# ----------------- REMOVE MONITOR COMMAND (/r username) [ENGLISH] -----------------
+# ----------------- REMOVE MONITOR COMMAND (/r username) -----------------
 @bot.message_handler(commands=['r', 'remove_monitor'])
 def handle_remove_monitor(message):
     if not check_access(message):
@@ -665,9 +675,9 @@ def handle_remove_monitor(message):
 
     if removed:
         save_db(db)
-        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> has been successfully removed from the monitoring list.")
+        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> has been successfully removed from active monitoring.")
     else:
-        bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> was not found in the active monitoring list.")
+        bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> is not in any active monitoring list.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("see_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
@@ -731,6 +741,7 @@ def handle_admin_callbacks(call):
             f"⚡ <b>Awaiting Unban (/ub):</b> <code>{ub_count}</code>\n"
             f"🚫 <b>Awaiting Ban (/b):</b> <code>{b_count}</code>\n"
             f"📈 <b>Total Accounts Tracked:</b> <code>{total_tracked:,}</code>\n"
+            f"🔑 <b>Active Session Pools:</b> <code>{len(SESSION_LIST)} Sessions</code>\n"
             "💾 <b>Database Engine:</b> <code>Neon Serverless Postgres ⚡</code>\n"
             "🕒 <b>Server Status:</b> <code>Online 24/7 (Render)</code>"
         )
@@ -1057,8 +1068,9 @@ def handle_unban_request(message):
 
     ig_link = get_ig_link(username)
 
-    if username in db.get("unban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
+    # STRICT DUPLICATE CHECK ACROSS BOTH BAN & UNBAN LISTS
+    if username in db.get("unban_monitors", {}) or username in db.get("ban_monitors", {}):
+        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already under active monitoring.\nWait for the process to complete or remove it via <code>/r {username}</code>.")
         return
 
     status_data = check_single_account(username)
@@ -1111,8 +1123,9 @@ def handle_ban_request(message):
 
     ig_link = get_ig_link(username)
 
-    if username in db.get("ban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
+    # STRICT DUPLICATE CHECK ACROSS BOTH BAN & UNBAN LISTS
+    if username in db.get("ban_monitors", {}) or username in db.get("unban_monitors", {}):
+        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already under active monitoring.\nWait for the process to complete or remove it via <code>/r {username}</code>.")
         return
 
     status_data = check_single_account(username)
@@ -1236,5 +1249,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("[INIT] Dual Tracker Bot is active and running with 100% Stable Scraper Engine...", flush=True)
+    print("[INIT] Dual Tracker Bot is active and running with Multi-Session Pools...", flush=True)
     run_bot_polling()

@@ -69,20 +69,86 @@ db_lock = threading.Lock()
 admin_state = {}
 user_message_history = {}
 
-# ----------------- SESSION POOL MANAGER -----------------
+# ----------------- ACCURATE SESSION POOL & VALIDATOR -----------------
 class SessionPool:
     def __init__(self, raw_string):
         self.all_sessions = [s.strip() for s in raw_string.split(",") if s.strip()]
-        self.active_sessions = set(self.all_sessions)
+        self.active_sessions = set()
         self.flagged_sessions = {}  # {session: reason}
         self.lock = threading.Lock()
+        self.is_validating = False
 
-    def reload_from_env(self):
+    def test_session_health(self, session_id):
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "X-IG-App-ID": "936619743392459",
+            "X-ASBD-ID": "129477",
+            "Accept": "*/*",
+            "Referer": "https://www.instagram.com/instagram/"
+        }
+        cookies = {"sessionid": session_id}
+        test_url = "https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram"
+
+        try:
+            r = requests.get(test_url, headers=headers, cookies=cookies, timeout=8, allow_redirects=False)
+            
+            # Check for redirects to login/challenge
+            if r.status_code in (301, 302):
+                loc = r.headers.get("Location", "")
+                if "challenge" in loc or "checkpoint" in loc:
+                    return False, "Checkpoint / Challenge Required"
+                return False, "Redirected to Login (Session Invalid)"
+
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("data", {}).get("user", {}).get("id"):
+                    return True, "Active & Working"
+                return False, "Empty Payload (Challenge Triggered)"
+            elif r.status_code == 401:
+                return False, "401 Unauthorized (Session Expired)"
+            elif r.status_code == 403:
+                return False, "403 Forbidden (Action/Account Blocked)"
+            elif r.status_code == 429:
+                return False, "429 Rate Limited by Instagram"
+            else:
+                return False, f"HTTP Error {r.status_code}"
+        except requests.exceptions.Timeout:
+            return False, "Connection Timeout"
+        except Exception as e:
+            return False, f"Network Error ({type(e).__name__})"
+
+    def run_full_validation(self):
         with self.lock:
-            raw = os.environ.get("INSTAGRAM_SESSION_IDS") or os.environ.get("INSTAGRAM_SESSION_ID", "")
+            if self.is_validating:
+                return
+            self.is_validating = True
+
+        print("[SESSION POOL] Starting live health check on all sessions...", flush=True)
+        new_active = set()
+        new_flagged = {}
+
+        for s in self.all_sessions:
+            is_valid, msg = self.test_session_health(s)
+            time_now = datetime.now().strftime("%I:%M %p")
+            if is_valid:
+                new_active.add(s)
+                print(f"[SESSION POOL] Session {s[:6]}...{s[-4:]} -> 🟢 ACTIVE", flush=True)
+            else:
+                new_flagged[s] = f"{msg} (Checked at {time_now})"
+                print(f"[SESSION POOL] Session {s[:6]}...{s[-4:]} -> 🔴 FLAGGED: {msg}", flush=True)
+            time.sleep(1)
+
+        with self.lock:
+            self.active_sessions = new_active
+            self.flagged_sessions = new_flagged
+            self.is_validating = False
+        print(f"[SESSION POOL] Validation complete: {len(new_active)} Active | {len(new_flagged)} Flagged", flush=True)
+
+    def reload_and_validate(self):
+        raw = os.environ.get("INSTAGRAM_SESSION_IDS") or os.environ.get("INSTAGRAM_SESSION_ID", "")
+        with self.lock:
             self.all_sessions = [s.strip() for s in raw.split(",") if s.strip()]
-            self.active_sessions = set(self.all_sessions)
-            self.flagged_sessions.clear()
+        threading.Thread(target=self.run_full_validation, daemon=True).start()
 
     def get_random_sessions(self, count=2):
         with self.lock:
@@ -97,15 +163,12 @@ class SessionPool:
         with self.lock:
             if session in self.active_sessions:
                 self.active_sessions.remove(session)
-                self.flagged_sessions[session] = f"{reason} ({datetime.now().strftime('%I:%M %p')})"
-                print(f"[SESSION POOL] Flagged session: {session[:8]}... Reason: {reason}", flush=True)
-
-    def reset_flags(self):
-        with self.lock:
-            self.active_sessions = set(self.all_sessions)
-            self.flagged_sessions.clear()
+            self.flagged_sessions[session] = f"{reason} ({datetime.now().strftime('%I:%M %p')})"
+            print(f"[SESSION POOL] Dynamically Flagged: {session[:8]}... Reason: {reason}", flush=True)
 
 session_pool = SessionPool(RAW_SESSIONS)
+# Start initial validation in background
+threading.Thread(target=session_pool.run_full_validation, daemon=True).start()
 
 # ----------------- NEON POSTGRESQL ENGINE -----------------
 def get_db_connection():
@@ -471,7 +534,8 @@ def single_request_check(username, session_id=None):
 
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        r = requests.get(api_url, headers=headers, cookies=cookies, timeout=7)
+        r = requests.get(api_url, headers=headers, cookies=cookies, timeout=7, allow_redirects=False)
+        
         if r.status_code == 200:
             data = r.json().get("data", {}).get("user")
             if data and data.get("id"):
@@ -483,8 +547,8 @@ def single_request_check(username, session_id=None):
             return {"status": "BANNED", "followers": 0, "following": 0}
         elif r.status_code == 404:
             return {"status": "BANNED", "followers": 0, "following": 0}
-        elif r.status_code in (401, 403) and session_id:
-            session_pool.flag_session(session_id, f"HTTP {r.status_code} Expired")
+        elif r.status_code in (301, 302, 401, 403) and session_id:
+            session_pool.flag_session(session_id, f"HTTP {r.status_code} Expired / Challenge")
             return {"status": "FLAGGED", "followers": 0, "following": 0}
     except Exception:
         pass
@@ -515,11 +579,9 @@ def check_single_account(username):
     if not username:
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-    # Randomly select 2 sessions from active pool
     sessions = session_pool.get_random_sessions(2)
     
     if not sessions:
-        # Fallback to standard request without sessions
         return single_request_check(username, None)
 
     results = []
@@ -758,7 +820,7 @@ def handle_admin_callbacks(call):
             pass
         return
 
-    # Session Pool Submenu
+    # Session Pool Menu
     if data == "admin_sessions_menu":
         total = len(session_pool.all_sessions)
         active = len(session_pool.active_sessions)
@@ -786,10 +848,10 @@ def handle_admin_callbacks(call):
     if data == "sess_view_active":
         actives = list(session_pool.active_sessions)
         if not actives:
-            text = "🟢 <b>Active Sessions:</b>\n\n<i>No active sessions found. Please add or update sessions in Environment Variables!</i>"
+            text = "🟢 <b>Active Sessions:</b>\n\n<i>⚠️ No working session IDs found! All sessions are currently flagged or invalid. Please update your environment variables.</i>"
         else:
-            lines = [f"{i+1}. <code>{s[:6]}...{s[-4:]}</code> (🟢 Working)" for i, s in enumerate(actives)]
-            text = f"🟢 <b>Active Sessions Pool ({len(actives)}):</b>\n\n" + "\n".join(lines)
+            lines = [f"{i+1}. <code>{s[:6]}...{s[-4:]}</code> (🟢 Working Verified)" for i, s in enumerate(actives)]
+            text = f"🟢 <b>Active Working Sessions ({len(actives)}):</b>\n\n" + "\n".join(lines)
 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Sessions", callback_data="admin_sessions_menu"))
@@ -799,10 +861,10 @@ def handle_admin_callbacks(call):
     if data == "sess_view_flagged":
         flagged = session_pool.flagged_sessions
         if not flagged:
-            text = "🔴 <b>Flagged Sessions:</b>\n\n<i>All loaded sessions are healthy and working smoothly!</i>"
+            text = "🔴 <b>Flagged Sessions:</b>\n\n<i>✨ No flagged sessions found. All loaded sessions are verified and active!</i>"
         else:
-            lines = [f"{i+1}. <code>{s[:6]}...{s[-4:]}</code> — <i>{reason}</i>" for i, (s, reason) in enumerate(flagged.items())]
-            text = f"🔴 <b>Flagged / Expired Sessions ({len(flagged)}):</b>\n\n" + "\n".join(lines)
+            lines = [f"{i+1}. <code>{s[:6]}...{s[-4:]}</code>\n   ↳ <i>Reason: {reason}</i>" for i, (s, reason) in enumerate(flagged.items())]
+            text = f"🔴 <b>Flagged / Inactive Sessions ({len(flagged)}):</b>\n\n" + "\n\n".join(lines)
 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Sessions", callback_data="admin_sessions_menu"))
@@ -810,8 +872,10 @@ def handle_admin_callbacks(call):
         return
 
     if data == "sess_reset_pool":
-        session_pool.reload_from_env()
-        bot.answer_callback_query(call.id, "✅ Session pool reloaded and flags reset!", show_alert=True)
+        bot.answer_callback_query(call.id, "🔄 Running live health validation on all sessions...", show_alert=True)
+        session_pool.reload_and_validate()
+        # Brief pause to let initial checks populate
+        time.sleep(1.5)
         handle_admin_callbacks(types.CallbackQuery(call.id, call.from_user, call.message, call.chat_instance, "admin_sessions_menu"))
         return
 
@@ -861,7 +925,7 @@ def handle_admin_callbacks(call):
             f"⚡ <b>Awaiting Unban (/ub):</b> <code>{ub_count}</code>\n"
             f"🚫 <b>Awaiting Ban (/b):</b> <code>{b_count}</code>\n"
             f"📈 <b>Total Accounts Tracked:</b> <code>{total_tracked:,}</code>\n"
-            f"🔑 <b>Active Sessions Loaded:</b> <code>{len(session_pool.active_sessions)} / {len(session_pool.all_sessions)}</code>\n"
+            f"🔑 <b>Active Sessions Live:</b> <code>{len(session_pool.active_sessions)} / {len(session_pool.all_sessions)}</code>\n"
             "💾 <b>Database Engine:</b> <code>Neon Serverless Postgres ⚡</code>\n"
             "🕒 <b>Server Status:</b> <code>Online 24/7 (Render)</code>"
         )
@@ -1189,7 +1253,6 @@ def handle_unban_request(message):
 
     ig_link = get_ig_link(username)
 
-    # Prevent duplicate monitoring
     if username in db.get("unban_monitors", {}) or username in db.get("ban_monitors", {}):
         bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already in active monitoring.\nIf you wish to re-add or change its mode, please remove it first using <code>/r {username}</code>.")
         return
@@ -1244,7 +1307,6 @@ def handle_ban_request(message):
 
     ig_link = get_ig_link(username)
 
-    # Prevent duplicate monitoring
     if username in db.get("ban_monitors", {}) or username in db.get("unban_monitors", {}):
         bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already in active monitoring.\nIf you wish to re-add or change its mode, please remove it first using <code>/r {username}</code>.")
         return
@@ -1336,7 +1398,7 @@ def handle_unrecognized_input(message):
             f"Hello {mention}, you must join all our required official channels below to access this bot:\n\n"
             "<i>Click each channel to join, then tap Verify:</i>"
         )
-        send_custom_media(message.chat.id, "force_join", text, reply_to=message.message_id, reply_markup=build_force_join_markup())
+        send_custom_media(chat.id, "force_join", text, reply_to=message.message_id, reply_markup=build_force_join_markup())
         return
 
     mention = get_user_mention(user.id, user.first_name)
@@ -1370,5 +1432,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("[INIT] Dual Tracker Bot is active and running with Multi-Session Pool Engine...", flush=True)
+    print("[INIT] Dual Tracker Bot is active with Real-time Session Health Verification Engine...", flush=True)
     run_bot_polling()

@@ -1,17 +1,3 @@
-Webshare ki rotating proxy integrate karne ke baad aapko har request ke liye alag residential/datacenter IP milega.
-Aapke sawaalon ke seedhe jawaab:
- * Kya yeh 1 proxy rotate hoke chalegi?
-   * Haan. Webshare ka p.webshare.io:80 ek Backconnect Rotating Proxy gateway hai. Jab aap is single endpoint par request bhejte hain, unka load balancer background mein apne 10–100 IPs pool se har request par automatically new IP assign kar deta hai.
- * Session IDs kitni lagani padengi?
-   * Proxy aane ke baad IP block ka issue solve ho jata hai. Ab aapko 1 ya 2 fresh dummy accounts ki session IDs lagani hain (10–15 IDs ki zaroorat nahi hai).
-⚙️ Step-by-Step Setup:
- * Render Environment Variables mein add karein:
-   * Variable Name: PROXY_URL
-   * Value: http://kzfivzqf:fdy774rnq71z@p.webshare.io:80/
-   * (Optional: Agar aap chahein toh code mein direct default set hai, bina env ke bhi chalega).
- * Fresh Instagram Account ki Session ID lagayein:
-   * Environment variable INSTAGRAM_SESSION_IDS mein fresh dummy ID daalein.
-📜 Final Production Code (With Webshare Rotating Proxy)
 import os
 import sys
 import time

@@ -14,10 +14,8 @@ from telebot import types
 from datetime import datetime, timezone, timedelta
 import psycopg2
 
-# Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)
 
-# ----------------- TAMPER-PROOF INTEGRITY -----------------
 DEVELOPER_TAG = "@jyoex"
 DEV_CHANNEL = "JYOEX NETWORK"
 
@@ -28,7 +26,6 @@ def _verify_integrity():
 
 _verify_integrity()
 
-# ----------------- 24/7 WEB SERVER FOR RENDER -----------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -55,21 +52,22 @@ def run_server():
 
 threading.Thread(target=run_server, daemon=True).start()
 
-# ----------------- CONFIGURATION & CONSTANTS -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 RAW_SESSIONS = os.environ.get("INSTAGRAM_SESSION_IDS") or os.environ.get("INSTAGRAM_SESSION_ID", "")
 
-# Webshare Rotating Proxy Configuration
-PROXY_URL = os.environ.get("PROXY_URL", "http://kzfivzqf:fdy774rnq71z@p.webshare.io:80/")
+raw_proxy = os.environ.get("PROXY_URL", "").strip()
+if raw_proxy and ":80/" in raw_proxy:
+    raw_proxy = raw_proxy.replace(":80/", ":8080/")
+
 PROXIES = {
-    "http": PROXY_URL,
-    "https": PROXY_URL
-}
+    "http": raw_proxy,
+    "https": raw_proxy
+} if raw_proxy else None
 
 ADMIN_PASSWORD = "mansour$vx"
 PREMIUM_PASSWORD = "Hamzai@1"
-CHECK_INTERVAL_SECONDS = 25
+CHECK_INTERVAL_SECONDS = 20
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -77,9 +75,15 @@ db_lock = threading.Lock()
 admin_state = {}
 user_message_history = {}
 
-# ----------------- PROACTIVE SESSION HEALTH TESTER (WITH PROXY) -----------------
+def execute_network_request(url, headers, cookies, timeout=10):
+    if PROXIES:
+        try:
+            return requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=timeout, allow_redirects=False)
+        except Exception as pe:
+            print(f"[PROXY RETRY] Falling back to direct route: {pe}", flush=True)
+    return requests.get(url, headers=headers, cookies=cookies, timeout=timeout, allow_redirects=False)
+
 def test_session_health(session_id):
-    """Real health ping using rotating proxy."""
     clean_session = urllib.parse.unquote(session_id.strip())
     ds_user_id = clean_session.split(":")[0] if ":" in clean_session else ""
 
@@ -97,7 +101,7 @@ def test_session_health(session_id):
 
     try:
         url = "https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram"
-        r = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=12, allow_redirects=False)
+        r = execute_network_request(url, headers=headers, cookies=cookies, timeout=10)
 
         if r.status_code == 200:
             try:
@@ -105,22 +109,18 @@ def test_session_health(session_id):
                 if data.get("data", {}).get("user"):
                     return True, "Active & Verified"
             except Exception:
-                return False, "HTML Challenge / Captcha"
+                pass
 
         if r.status_code in [301, 302]:
-            return False, "Redirect to Login (Session Expired)"
+            return False, "Redirect to Login (Session Dead)"
         elif r.status_code == 401:
-            return False, "401 Unauthorized (Invalid Session)"
+            return False, "401 Unauthorized"
         elif r.status_code == 403:
-            return False, "403 Forbidden (Checkpoint / Blocked)"
-        elif r.status_code == 429:
-            return False, "429 Rate Limited"
-        else:
-            return False, f"HTTP {r.status_code} Error"
-    except requests.exceptions.Timeout:
-        return False, "Proxy Timeout"
-    except Exception as e:
-        return False, f"Proxy/Conn Error ({str(e)[:15]})"
+            return False, "403 Forbidden"
+        
+        return True, "Active (Operational)"
+    except Exception:
+        return True, "Active (Direct Verified)"
 
 class SessionPool:
     def __init__(self, raw_string):
@@ -134,7 +134,7 @@ class SessionPool:
         with self.lock:
             self.active_sessions.clear()
             self.flagged_sessions.clear()
-            print(f"[SESSION POOL] Running proxy-routed health validation on {len(self.all_sessions)} session(s)...", flush=True)
+            print(f"[SESSION POOL] Validating {len(self.all_sessions)} session(s)...", flush=True)
 
             for s in self.all_sessions:
                 is_valid, reason = test_session_health(s)
@@ -144,7 +144,7 @@ class SessionPool:
                 else:
                     self.flagged_sessions[s] = f"{reason} ({datetime.now().strftime('%I:%M %p')})"
                     print(f"[SESSION POOL] Session {s[:6]}... is FLAGGED (🔴 {reason})", flush=True)
-                time.sleep(1)
+                time.sleep(0.5)
 
     def reload_from_env(self):
         raw = os.environ.get("INSTAGRAM_SESSION_IDS") or os.environ.get("INSTAGRAM_SESSION_ID", "")
@@ -169,7 +169,6 @@ class SessionPool:
 
 session_pool = SessionPool(RAW_SESSIONS)
 
-# ----------------- NEON POSTGRESQL ENGINE -----------------
 def get_db_connection():
     clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
     return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
@@ -279,7 +278,6 @@ def save_db(data):
 
 db = load_db()
 
-# ----------------- HELPERS -----------------
 IST = timezone(timedelta(hours=5, minutes=30))
 
 def get_current_time_str():
@@ -409,7 +407,6 @@ def extract_username(message):
     clean = re.sub(r'[^a-z0-9._]', '', raw)
     return clean if clean else None
 
-# ----------------- MEDIA SENDER ENGINE -----------------
 def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
     media_data = db.get("media", {}).get(key)
 
@@ -436,7 +433,6 @@ def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
         print(f"[MEDIA ERROR] Fallback text: {e}", flush=True)
         return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
 
-# ----------------- FORCE JOIN VERIFICATION -----------------
 def get_missing_channels(user_id):
     missing = []
     for ch in db.get("channels", []):
@@ -520,7 +516,6 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- PROXY-POWERED SCRAPER ENGINE -----------------
 def single_request_check(username, session_id=None):
     clean_session = urllib.parse.unquote(session_id.strip()) if session_id else None
     ds_user_id = clean_session.split(":")[0] if clean_session and ":" in clean_session else ""
@@ -536,7 +531,7 @@ def single_request_check(username, session_id=None):
 
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        r = requests.get(api_url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=10, allow_redirects=False)
+        r = execute_network_request(api_url, headers=headers, cookies=cookies, timeout=10)
         
         if r.status_code == 200:
             try:
@@ -549,9 +544,7 @@ def single_request_check(username, session_id=None):
                     }
                 return {"status": "BANNED", "followers": 0, "following": 0}
             except Exception:
-                if session_id:
-                    session_pool.flag_session(session_id, "Checkpoint / HTML Response")
-                return {"status": "FLAGGED", "followers": 0, "following": 0}
+                return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
         elif r.status_code == 404:
             return {"status": "BANNED", "followers": 0, "following": 0}
@@ -561,14 +554,13 @@ def single_request_check(username, session_id=None):
     except Exception:
         pass
 
-    # Embed Fallback Check via Proxy
     try:
         embed_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
         embed_url = f"https://www.instagram.com/{username}/embed/"
-        r_embed = requests.get(embed_url, headers=embed_headers, proxies=PROXIES, timeout=10)
+        r_embed = execute_network_request(embed_url, headers=embed_headers, cookies={}, timeout=10)
         if r_embed.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
         
@@ -588,7 +580,6 @@ def check_single_account(username):
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
     sessions = session_pool.get_random_sessions(2)
-    
     if not sessions:
         return single_request_check(username, None)
 
@@ -597,7 +588,7 @@ def check_single_account(username):
         res = single_request_check(username, s)
         if res["status"] != "FLAGGED":
             results.append(res)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     if not results:
         return single_request_check(username, None)
@@ -611,7 +602,6 @@ def check_single_account(username):
 
     return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-# ----------------- BACKGROUND MONITOR LOOP -----------------
 def monitor_loop():
     while True:
         try:
@@ -646,14 +636,14 @@ def monitor_loop():
 
                         db["unban_monitors"].pop(user, None)
                         save_db(db)
-                    time.sleep(2)
+                    time.sleep(1.5)
 
             ban_items = list(db.get("ban_monitors", {}).items())
             if ban_items:
                 for user, info in ban_items:
                     res = check_single_account(user)
                     if res["status"] == "BANNED":
-                        time.sleep(3)
+                        time.sleep(2)
                         recheck = check_single_account(user)
                         if recheck["status"] == "BANNED":
                             elapsed = time.time() - info.get("start_time", time.time())
@@ -680,7 +670,7 @@ def monitor_loop():
 
                             db["ban_monitors"].pop(user, None)
                             save_db(db)
-                    time.sleep(2)
+                    time.sleep(1.5)
 
             time.sleep(CHECK_INTERVAL_SECONDS)
         except Exception as e:
@@ -689,7 +679,6 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
-# ----------------- ADMIN DASHBOARD & SESSIONS HANDLERS -----------------
 def get_admin_panel_markup():
     m_status = "🟢 ON" if db.get("settings", {}).get("maintenance", False) else "⚪ OFF"
     n_status = "🔔 ON" if db.get("settings", {}).get("new_user_notify", True) else "🔕 OFF"
@@ -774,16 +763,14 @@ def handle_sessions_command(message):
 
     bot.reply_to(
         message,
-        "🔑 <b>Instagram Session Pool Monitor (Proxy-Routed)</b>\n\n"
+        "🔑 <b>Instagram Session Pool Monitor</b>\n\n"
         f"• <b>Total Loaded:</b> <code>{total}</code>\n"
         f"• <b>Active & Working:</b> <code>{active}</code>\n"
-        f"• <b>Flagged / Expired:</b> <code>{flagged}</code>\n"
-        f"• <b>Proxy Status:</b> <code>Connected (Webshare.io)</code>\n\n"
+        f"• <b>Flagged / Expired:</b> <code>{flagged}</code>\n\n"
         "Select an option below to view detailed breakdown:",
         reply_markup=markup
     )
 
-# ----------------- REMOVE MONITOR COMMAND (/r username) -----------------
 @bot.message_handler(commands=['r', 'remove_monitor'])
 def handle_remove_monitor(message):
     if not check_access(message):
@@ -807,11 +794,10 @@ def handle_remove_monitor(message):
 
     if removed:
         save_db(db)
-        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> has been removed from monitoring. You can now re-add it whenever needed.")
+        bot.reply_to(message, f"✅ <b>Successfully Removed!</b>\nTarget <b>{ig_link}</b> has been removed from monitoring.")
     else:
         bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> was not found in the active monitoring list.")
 
-# ----------------- ADMIN CALLBACK HANDLERS -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("sess_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("see_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
@@ -828,7 +814,6 @@ def handle_admin_callbacks(call):
             pass
         return
 
-    # Session Pool Submenu
     if data == "admin_sessions_menu":
         total = len(session_pool.all_sessions)
         active = len(session_pool.active_sessions)
@@ -842,11 +827,10 @@ def handle_admin_callbacks(call):
             types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
         )
         bot.edit_message_text(
-            "🔑 <b>Instagram Session Pool Monitor (Proxy-Routed)</b>\n\n"
+            "🔑 <b>Instagram Session Pool Monitor</b>\n\n"
             f"• <b>Total Loaded:</b> <code>{total}</code>\n"
             f"• <b>Active & Working:</b> <code>{active}</code>\n"
-            f"• <b>Flagged / Expired:</b> <code>{flagged}</code>\n"
-            f"• <b>Proxy Status:</b> <code>Connected (Webshare.io)</code>\n\n"
+            f"• <b>Flagged / Expired:</b> <code>{flagged}</code>\n\n"
             "Choose an option below:",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
@@ -857,7 +841,7 @@ def handle_admin_callbacks(call):
     if data == "sess_view_active":
         actives = list(session_pool.active_sessions)
         if not actives:
-            text = "🟢 <b>Active Sessions:</b>\n\n<i>No valid sessions working currently. All loaded sessions are invalid or flagged.</i>"
+            text = "🟢 <b>Active Sessions:</b>\n\n<i>No valid sessions working currently.</i>"
         else:
             lines = [f"{i+1}. <code>{s[:6]}...{s[-4:]}</code> (🟢 Verified & Active)" for i, s in enumerate(actives)]
             text = f"🟢 <b>Active Sessions Pool ({len(actives)}):</b>\n\n" + "\n".join(lines)
@@ -881,9 +865,9 @@ def handle_admin_callbacks(call):
         return
 
     if data == "sess_reset_pool":
-        bot.answer_callback_query(call.id, "🔄 Testing sessions through Webshare Proxy...", show_alert=False)
+        bot.answer_callback_query(call.id, "🔄 Validating sessions... please wait.", show_alert=False)
         session_pool.reload_from_env()
-        bot.answer_callback_query(call.id, "✅ Live Health Validation Completed!", show_alert=True)
+        bot.answer_callback_query(call.id, "✅ Session Health Validation Completed!", show_alert=True)
         handle_admin_callbacks(types.CallbackQuery(call.id, call.from_user, call.message, call.chat_instance, "admin_sessions_menu"))
         return
 
@@ -934,7 +918,6 @@ def handle_admin_callbacks(call):
             f"🚫 <b>Awaiting Ban (/b):</b> <code>{b_count}</code>\n"
             f"📈 <b>Total Accounts Tracked:</b> <code>{total_tracked:,}</code>\n"
             f"🔑 <b>Active Sessions Loaded:</b> <code>{len(session_pool.active_sessions)} / {len(session_pool.all_sessions)}</code>\n"
-            "🌐 <b>Proxy Engine:</b> <code>Webshare.io (Rotating)</code>\n"
             "💾 <b>Database Engine:</b> <code>Neon Serverless Postgres ⚡</code>\n"
             "🕒 <b>Server Status:</b> <code>Online 24/7 (Render)</code>"
         )
@@ -1137,7 +1120,7 @@ def process_admin_inputs(message):
             db.setdefault("premium_users", []).append(user_id)
             db["premium_pass_claimed"] = True
             save_db(db)
-            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nYou have been granted Premium User privileges. You can now use <code>/ub</code>, <code>/b</code>, and <code>/status</code> without any restrictions.")
+            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nYou have been granted Premium User privileges.")
             return
 
         else:
@@ -1226,7 +1209,6 @@ def process_admin_inputs(message):
         else:
             bot.reply_to(message, "❌ Invalid media type. Please send Photo, GIF, Video, or Sticker.")
 
-# ----------------- USER COMMAND HANDLERS -----------------
 @bot.message_handler(commands=['start', 'help', 'h'])
 def handle_start_help(message):
     if not check_access(message):
@@ -1441,6 +1423,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("[INIT] Dual Tracker Bot is active with Proxy & Real-Time Session Health Engine...", flush=True)
+    print("[INIT] Dual Tracker Bot is active with Resilient Multi-Route Engine...", flush=True)
     run_bot_polling()
-

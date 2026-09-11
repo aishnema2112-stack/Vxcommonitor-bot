@@ -14,8 +14,10 @@ from telebot import types
 from datetime import datetime, timezone, timedelta
 import psycopg2
 
+# Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)
 
+# ----------------- TAMPER-PROOF INTEGRITY -----------------
 DEVELOPER_TAG = "@jyoex"
 DEV_CHANNEL = "JYOEX NETWORK"
 
@@ -26,6 +28,7 @@ def _verify_integrity():
 
 _verify_integrity()
 
+# ----------------- 24/7 WEB SERVER FOR RENDER -----------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -52,14 +55,12 @@ def run_server():
 
 threading.Thread(target=run_server, daemon=True).start()
 
+# ----------------- CONFIGURATION & CONSTANTS -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 RAW_SESSIONS = os.environ.get("INSTAGRAM_SESSION_IDS") or os.environ.get("INSTAGRAM_SESSION_ID", "")
 
 raw_proxy = os.environ.get("PROXY_URL", "").strip()
-if raw_proxy and ":80/" in raw_proxy:
-    raw_proxy = raw_proxy.replace(":80/", ":8080/")
-
 PROXIES = {
     "http": raw_proxy,
     "https": raw_proxy
@@ -75,14 +76,17 @@ db_lock = threading.Lock()
 admin_state = {}
 user_message_history = {}
 
-def execute_network_request(url, headers, cookies, timeout=10):
+# ----------------- NETWORK EXECUTION ROUTE -----------------
+def execute_network_request(url, headers, cookies, timeout=8):
     if PROXIES:
         try:
-            return requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=timeout, allow_redirects=False)
-        except Exception as pe:
-            print(f"[PROXY RETRY] Falling back to direct route: {pe}", flush=True)
+            r = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=timeout, allow_redirects=False)
+            return r
+        except Exception:
+            pass  # Proxy fail hone par bina ruke direct fallback
     return requests.get(url, headers=headers, cookies=cookies, timeout=timeout, allow_redirects=False)
 
+# ----------------- PROACTIVE SESSION HEALTH TESTER -----------------
 def test_session_health(session_id):
     clean_session = urllib.parse.unquote(session_id.strip())
     ds_user_id = clean_session.split(":")[0] if ":" in clean_session else ""
@@ -101,7 +105,7 @@ def test_session_health(session_id):
 
     try:
         url = "https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram"
-        r = execute_network_request(url, headers=headers, cookies=cookies, timeout=10)
+        r = execute_network_request(url, headers=headers, cookies=cookies, timeout=8)
 
         if r.status_code == 200:
             try:
@@ -144,7 +148,7 @@ class SessionPool:
                 else:
                     self.flagged_sessions[s] = f"{reason} ({datetime.now().strftime('%I:%M %p')})"
                     print(f"[SESSION POOL] Session {s[:6]}... is FLAGGED (🔴 {reason})", flush=True)
-                time.sleep(0.5)
+                time.sleep(0.3)
 
     def reload_from_env(self):
         raw = os.environ.get("INSTAGRAM_SESSION_IDS") or os.environ.get("INSTAGRAM_SESSION_ID", "")
@@ -169,6 +173,7 @@ class SessionPool:
 
 session_pool = SessionPool(RAW_SESSIONS)
 
+# ----------------- NEON POSTGRESQL ENGINE -----------------
 def get_db_connection():
     clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
     return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
@@ -278,6 +283,7 @@ def save_db(data):
 
 db = load_db()
 
+# ----------------- HELPERS -----------------
 IST = timezone(timedelta(hours=5, minutes=30))
 
 def get_current_time_str():
@@ -407,6 +413,7 @@ def extract_username(message):
     clean = re.sub(r'[^a-z0-9._]', '', raw)
     return clean if clean else None
 
+# ----------------- MEDIA SENDER ENGINE -----------------
 def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
     media_data = db.get("media", {}).get(key)
 
@@ -433,6 +440,7 @@ def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
         print(f"[MEDIA ERROR] Fallback text: {e}", flush=True)
         return bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to, reply_markup=reply_markup)
 
+# ----------------- FORCE JOIN VERIFICATION -----------------
 def get_missing_channels(user_id):
     missing = []
     for ch in db.get("channels", []):
@@ -516,6 +524,7 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
+# ----------------- ACCURATE SCRAPER ENGINE -----------------
 def single_request_check(username, session_id=None):
     clean_session = urllib.parse.unquote(session_id.strip()) if session_id else None
     ds_user_id = clean_session.split(":")[0] if clean_session and ":" in clean_session else ""
@@ -531,7 +540,7 @@ def single_request_check(username, session_id=None):
 
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        r = execute_network_request(api_url, headers=headers, cookies=cookies, timeout=10)
+        r = execute_network_request(api_url, headers=headers, cookies=cookies, timeout=8)
         
         if r.status_code == 200:
             try:
@@ -560,7 +569,7 @@ def single_request_check(username, session_id=None):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
         embed_url = f"https://www.instagram.com/{username}/embed/"
-        r_embed = execute_network_request(embed_url, headers=embed_headers, cookies={}, timeout=10)
+        r_embed = execute_network_request(embed_url, headers=embed_headers, cookies={}, timeout=8)
         if r_embed.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
         
@@ -602,6 +611,7 @@ def check_single_account(username):
 
     return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
+# ----------------- BACKGROUND MONITOR LOOP -----------------
 def monitor_loop():
     while True:
         try:
@@ -679,6 +689,7 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
+# ----------------- ADMIN DASHBOARD & COMMAND HANDLERS -----------------
 def get_admin_panel_markup():
     m_status = "🟢 ON" if db.get("settings", {}).get("maintenance", False) else "⚪ OFF"
     n_status = "🔔 ON" if db.get("settings", {}).get("new_user_notify", True) else "🔕 OFF"
@@ -771,6 +782,7 @@ def handle_sessions_command(message):
         reply_markup=markup
     )
 
+# ----------------- REMOVE MONITOR COMMAND (/r username) -----------------
 @bot.message_handler(commands=['r', 'remove_monitor'])
 def handle_remove_monitor(message):
     if not check_access(message):
@@ -798,6 +810,7 @@ def handle_remove_monitor(message):
     else:
         bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> was not found in the active monitoring list.")
 
+# ----------------- ADMIN CALLBACK HANDLERS -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("sess_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("see_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
@@ -1209,6 +1222,7 @@ def process_admin_inputs(message):
         else:
             bot.reply_to(message, "❌ Invalid media type. Please send Photo, GIF, Video, or Sticker.")
 
+# ----------------- USER COMMAND HANDLERS -----------------
 @bot.message_handler(commands=['start', 'help', 'h'])
 def handle_start_help(message):
     if not check_access(message):
@@ -1425,3 +1439,4 @@ if __name__ == "__main__":
     _verify_integrity()
     print("[INIT] Dual Tracker Bot is active with Resilient Multi-Route Engine...", flush=True)
     run_bot_polling()
+

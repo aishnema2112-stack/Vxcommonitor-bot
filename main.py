@@ -83,20 +83,20 @@ def execute_network_request(url, headers, cookies, timeout=8):
             r = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=timeout, allow_redirects=False)
             return r
         except Exception:
-            pass  # Proxy fail hone par bina ruke direct fallback
+            pass  # Fallback to direct request if proxy fails
     return requests.get(url, headers=headers, cookies=cookies, timeout=timeout, allow_redirects=False)
 
-# ----------------- PROACTIVE SESSION HEALTH TESTER -----------------
+# ----------------- STRICT SESSION HEALTH TESTER -----------------
 def test_session_health(session_id):
     clean_session = urllib.parse.unquote(session_id.strip())
     ds_user_id = clean_session.split(":")[0] if ":" in clean_session else ""
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "X-IG-App-ID": "936619743392459",
         "X-ASBD-ID": "129477",
         "Accept": "*/*",
-        "Referer": "https://www.instagram.com/instagram/"
+        "Referer": "https://www.instagram.com/"
     }
     cookies = {
         "sessionid": clean_session,
@@ -108,23 +108,22 @@ def test_session_health(session_id):
         r = execute_network_request(url, headers=headers, cookies=cookies, timeout=8)
 
         if r.status_code == 200:
-            try:
-                data = r.json()
-                if data.get("data", {}).get("user"):
-                    return True, "Active & Verified"
-            except Exception:
-                pass
+            data = r.json()
+            if data.get("data", {}).get("user"):
+                return True, "Active & Verified"
 
         if r.status_code in [301, 302]:
-            return False, "Redirect to Login (Session Dead)"
+            return False, "Redirect to Login / Challenge"
         elif r.status_code == 401:
             return False, "401 Unauthorized"
+        elif r.status_code == 429:
+            return False, "429 Rate Limited"
         elif r.status_code == 403:
-            return False, "403 Forbidden"
-        
-        return True, "Active (Operational)"
-    except Exception:
-        return True, "Active (Direct Verified)"
+            return False, "403 Forbidden (Blocked)"
+
+        return False, f"HTTP {r.status_code} Error"
+    except Exception as e:
+        return False, f"Connection Failed ({str(e)[:20]})"
 
 class SessionPool:
     def __init__(self, raw_string):
@@ -243,12 +242,12 @@ def load_db():
             row = cur.fetchone()
             cur.close()
             conn.close()
-            
+
             if row and row[0]:
                 data = row[0]
                 if isinstance(data, str):
                     data = json.loads(data)
-                
+
                 data["channels"] = default_data["channels"]
                 data["buttons"] = default_data["buttons"]
 
@@ -378,7 +377,7 @@ def format_count(count):
             return count
     if not isinstance(count, (int, float)):
         return "N/A"
-    
+
     if count >= 1_000_000:
         val = count / 1_000_000
         return f"{val:.1f}M" if val % 1 != 0 else f"{int(val)}M"
@@ -457,7 +456,7 @@ def build_force_join_markup():
     for ch in db.get("channels", []):
         btn_label = f"{ch.get('color', '📢')} {ch['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=ch["link"]))
-    
+
     for btn in db.get("buttons", []):
         btn_label = f"{btn.get('color', '📢')} {btn['name']}"
         markup.add(types.InlineKeyboardButton(btn_label, url=btn["link"]))
@@ -530,54 +529,51 @@ def single_request_check(username, session_id=None):
     ds_user_id = clean_session.split(":")[0] if clean_session and ":" in clean_session else ""
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "X-IG-App-ID": "936619743392459",
-        "X-ASBD-ID": "129477",
         "Accept": "*/*",
         "Referer": f"https://www.instagram.com/{username}/"
     }
     cookies = {"sessionid": clean_session, "ds_user_id": ds_user_id} if clean_session else {}
 
+    # Method 1: Web Profile Info API
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
         r = execute_network_request(api_url, headers=headers, cookies=cookies, timeout=8)
-        
+
         if r.status_code == 200:
-            try:
-                data = r.json().get("data", {}).get("user")
-                if data and data.get("id"):
-                    return {
-                        "status": "ACTIVE",
-                        "followers": data.get("edge_followed_by", {}).get("count", 0),
-                        "following": data.get("edge_follow", {}).get("count", 0)
-                    }
-                return {"status": "BANNED", "followers": 0, "following": 0}
-            except Exception:
-                return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+            user_data = r.json().get("data", {}).get("user")
+            if user_data:
+                return {
+                    "status": "ACTIVE",
+                    "followers": user_data.get("edge_followed_by", {}).get("count", 0),
+                    "following": user_data.get("edge_follow", {}).get("count", 0)
+                }
+            return {"status": "BANNED", "followers": 0, "following": 0}
 
         elif r.status_code == 404:
             return {"status": "BANNED", "followers": 0, "following": 0}
-        elif r.status_code in [301, 302, 401, 403] and session_id:
-            session_pool.flag_session(session_id, f"HTTP {r.status_code} Expired")
-            return {"status": "FLAGGED", "followers": 0, "following": 0}
+
+        elif r.status_code in [301, 302, 401, 403, 429] and session_id:
+            session_pool.flag_session(session_id, f"HTTP {r.status_code} (Rate Limit / Challenge)")
     except Exception:
         pass
 
+    # Method 2: Public Status Check Fallback (Bypasses Session Blocks)
     try:
-        embed_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        html_url = f"https://www.instagram.com/{username}/"
+        h_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
-        embed_url = f"https://www.instagram.com/{username}/embed/"
-        r_embed = execute_network_request(embed_url, headers=embed_headers, cookies={}, timeout=8)
-        if r_embed.status_code in (404, 410):
+        r_html = execute_network_request(html_url, headers=h_headers, cookies={}, timeout=8)
+
+        if r_html.status_code == 404:
             return {"status": "BANNED", "followers": 0, "following": 0}
-        
-        embed_text = r_embed.text
-        if "Watch on Instagram" in embed_text or "View profile" in embed_text:
+        elif r_html.status_code == 200:
+            if "Page Not Found" in r_html.text or "isn't available" in r_html.text:
+                return {"status": "BANNED", "followers": 0, "following": 0}
             return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
-        if any(err in embed_text for err in ["Page Not Found", "unavailable", "The link you followed may be broken"]):
-            return {"status": "BANNED", "followers": 0, "following": 0}
     except Exception:
         pass
 
@@ -746,7 +742,7 @@ def handle_admin(message):
     if not is_admin_or_owner(user_id):
         bot.reply_to(message, "⛔ <b>Access Denied:</b> Send <code>/claim</code> to authenticate first.")
         return
-    
+
     admin_text = (
         "🔧 <b>Administrator Control Panel</b>\n\n"
         "Welcome to the master management dashboard.\n"
@@ -952,7 +948,7 @@ def handle_admin_callbacks(call):
         out.write("==== REGISTERED USERS DATABASE ====\n\n")
         for uid, u in users.items():
             out.write(f"ID: {uid} | Name: {u.get('name')} | Username: {u.get('username')} | Requests: {u.get('req_count', 0)} | Joined: {u.get('joined_at')}\n")
-        
+
         out.seek(0)
         bio = io.BytesIO(out.getvalue().encode('utf-8'))
         bio.name = f"users_database_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -1403,7 +1399,7 @@ def handle_unrecognized_input(message):
             f"Hello {mention}, you must join all our required official channels below to access this bot:\n\n"
             "<i>Click each channel to join, then tap Verify:</i>"
         )
-        send_custom_media(chat.id, "force_join", text, reply_to=message.message_id, reply_markup=build_force_join_markup())
+        send_custom_media(message.chat.id, "force_join", text, reply_to=message.message_id, reply_markup=build_force_join_markup())
         return
 
     mention = get_user_mention(user.id, user.first_name)

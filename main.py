@@ -77,24 +77,111 @@ admin_state = {}
 user_message_history = {}
 
 # ----------------- NETWORK EXECUTION ROUTE -----------------
-def execute_network_request(url, headers, cookies, timeout=8):
+def execute_network_request(url, headers, cookies=None, timeout=10):
     if PROXIES:
         try:
-            r = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=timeout, allow_redirects=False)
+            r = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=timeout, allow_redirects=True)
             return r
         except Exception:
-            pass  # Fallback to direct request if proxy fails
-    return requests.get(url, headers=headers, cookies=cookies, timeout=timeout, allow_redirects=False)
+            pass  # Fallback to direct request
+    return requests.get(url, headers=headers, cookies=cookies, timeout=timeout, allow_redirects=True)
 
-# ----------------- STRICT SESSION HEALTH TESTER -----------------
+# ----------------- BULLETPROOF SCRAPER & HEALTH ENGINE -----------------
+def single_request_check(username, session_id=None):
+    clean_username = username.strip().lower().replace("@", "")
+    if not clean_username:
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+    clean_session = urllib.parse.unquote(session_id.strip()) if session_id else None
+    ds_user_id = clean_session.split(":")[0] if clean_session and ":" in clean_session else ""
+
+    # Route 1: Official Instagram Web Profile Info API
+    api_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "X-IG-App-ID": "936619743392459",
+        "X-ASBD-ID": "129477",
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "*/*",
+        "Referer": f"https://www.instagram.com/{clean_username}/"
+    }
+    cookies = {"sessionid": clean_session, "ds_user_id": ds_user_id} if clean_session else {}
+
+    try:
+        api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={clean_username}"
+        r = execute_network_request(api_url, headers=api_headers, cookies=cookies, timeout=8)
+
+        if r.status_code == 200:
+            data = r.json()
+            user_data = data.get("data", {}).get("user")
+            if user_data:
+                return {
+                    "status": "ACTIVE",
+                    "followers": user_data.get("edge_followed_by", {}).get("count", 0),
+                    "following": user_data.get("edge_follow", {}).get("count", 0)
+                }
+            else:
+                return {"status": "BANNED", "followers": 0, "following": 0}
+        elif r.status_code == 404:
+            return {"status": "BANNED", "followers": 0, "following": 0}
+        elif r.status_code in [301, 302, 401, 403, 429] and session_id:
+            session_pool.flag_session(session_id, f"HTTP {r.status_code} challenge/rate-limit")
+    except Exception:
+        pass
+
+    # Route 2: Instagram Embed Scraper (No Session Required, Highly Accurate)
+    try:
+        embed_url = f"https://www.instagram.com/{clean_username}/embed/"
+        embed_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        }
+        r_embed = execute_network_request(embed_url, headers=embed_headers, cookies={}, timeout=8)
+        
+        if r_embed.status_code in [404, 410]:
+            return {"status": "BANNED", "followers": 0, "following": 0}
+        
+        text = r_embed.text
+        if "Watch on Instagram" in text or "View profile" in text or f"/{clean_username}/" in text:
+            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+        if "Page Not Found" in text or "unavailable" in text or "link you followed may be broken" in text:
+            return {"status": "BANNED", "followers": 0, "following": 0}
+    except Exception:
+        pass
+
+    # Route 3: Direct Profile HTML OpenGraph Inspection
+    try:
+        html_url = f"https://www.instagram.com/{clean_username}/"
+        html_headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        r_html = execute_network_request(html_url, headers=html_headers, cookies={}, timeout=8)
+        
+        if r_html.status_code == 404:
+            return {"status": "BANNED", "followers": 0, "following": 0}
+        
+        html_text = r_html.text
+        if "instapp:owner_user_id" in html_text or f"@{clean_username}" in html_text or "og:type\" content=\"profile\"" in html_text:
+            f_match = re.search(r'([0-9.,kKmM]+)\s+Followers', html_text)
+            followers = f_match.group(1) if f_match else "N/A"
+            return {"status": "ACTIVE", "followers": followers, "following": "N/A"}
+        
+        if "Page Not Found" in html_text or "isn't available" in html_text:
+            return {"status": "BANNED", "followers": 0, "following": 0}
+    except Exception:
+        pass
+
+    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
 def test_session_health(session_id):
     clean_session = urllib.parse.unquote(session_id.strip())
     ds_user_id = clean_session.split(":")[0] if ":" in clean_session else ""
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "X-IG-App-ID": "936619743392459",
         "X-ASBD-ID": "129477",
+        "X-Requested-With": "XMLHttpRequest",
         "Accept": "*/*",
         "Referer": "https://www.instagram.com/"
     }
@@ -111,19 +198,20 @@ def test_session_health(session_id):
             data = r.json()
             if data.get("data", {}).get("user"):
                 return True, "Active & Verified"
-
+            return False, "Empty User Data"
+        
         if r.status_code in [301, 302]:
-            return False, "Redirect to Login / Challenge"
+            return False, "Redirect / Challenge"
         elif r.status_code == 401:
             return False, "401 Unauthorized"
         elif r.status_code == 429:
             return False, "429 Rate Limited"
         elif r.status_code == 403:
-            return False, "403 Forbidden (Blocked)"
+            return False, "403 Forbidden"
 
-        return False, f"HTTP {r.status_code} Error"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
-        return False, f"Connection Failed ({str(e)[:20]})"
+        return False, f"Failed ({str(e)[:15]})"
 
 class SessionPool:
     def __init__(self, raw_string):
@@ -171,6 +259,20 @@ class SessionPool:
                 print(f"[SESSION POOL] Dynamically Flagged: {session[:8]}... Reason: {reason}", flush=True)
 
 session_pool = SessionPool(RAW_SESSIONS)
+
+def check_single_account(username):
+    username = username.strip().lower().replace("@", "")
+    if not username:
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+
+    sessions = session_pool.get_random_sessions(1)
+    if sessions:
+        res = single_request_check(username, sessions[0])
+        if res["status"] in ["ACTIVE", "BANNED"]:
+            return res
+
+    # Direct / Sessionless Scraper Route Fallback
+    return single_request_check(username, None)
 
 # ----------------- NEON POSTGRESQL ENGINE -----------------
 def get_db_connection():
@@ -522,90 +624,6 @@ def handle_verify_callback(call):
             )
         except Exception:
             pass
-
-# ----------------- ACCURATE SCRAPER ENGINE -----------------
-def single_request_check(username, session_id=None):
-    clean_session = urllib.parse.unquote(session_id.strip()) if session_id else None
-    ds_user_id = clean_session.split(":")[0] if clean_session and ":" in clean_session else ""
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-        "X-IG-App-ID": "936619743392459",
-        "Accept": "*/*",
-        "Referer": f"https://www.instagram.com/{username}/"
-    }
-    cookies = {"sessionid": clean_session, "ds_user_id": ds_user_id} if clean_session else {}
-
-    # Method 1: Web Profile Info API
-    try:
-        api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        r = execute_network_request(api_url, headers=headers, cookies=cookies, timeout=8)
-
-        if r.status_code == 200:
-            user_data = r.json().get("data", {}).get("user")
-            if user_data:
-                return {
-                    "status": "ACTIVE",
-                    "followers": user_data.get("edge_followed_by", {}).get("count", 0),
-                    "following": user_data.get("edge_follow", {}).get("count", 0)
-                }
-            return {"status": "BANNED", "followers": 0, "following": 0}
-
-        elif r.status_code == 404:
-            return {"status": "BANNED", "followers": 0, "following": 0}
-
-        elif r.status_code in [301, 302, 401, 403, 429] and session_id:
-            session_pool.flag_session(session_id, f"HTTP {r.status_code} (Rate Limit / Challenge)")
-    except Exception:
-        pass
-
-    # Method 2: Public Status Check Fallback (Bypasses Session Blocks)
-    try:
-        html_url = f"https://www.instagram.com/{username}/"
-        h_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-        r_html = execute_network_request(html_url, headers=h_headers, cookies={}, timeout=8)
-
-        if r_html.status_code == 404:
-            return {"status": "BANNED", "followers": 0, "following": 0}
-        elif r_html.status_code == 200:
-            if "Page Not Found" in r_html.text or "isn't available" in r_html.text:
-                return {"status": "BANNED", "followers": 0, "following": 0}
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
-    except Exception:
-        pass
-
-    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
-
-def check_single_account(username):
-    username = username.strip().lower().replace("@", "")
-    if not username:
-        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
-
-    sessions = session_pool.get_random_sessions(2)
-    if not sessions:
-        return single_request_check(username, None)
-
-    results = []
-    for s in sessions:
-        res = single_request_check(username, s)
-        if res["status"] != "FLAGGED":
-            results.append(res)
-        time.sleep(0.3)
-
-    if not results:
-        return single_request_check(username, None)
-
-    statuses = [r["status"] for r in results]
-    if "ACTIVE" in statuses:
-        active_res = next(r for r in results if r["status"] == "ACTIVE")
-        return active_res
-    elif all(s == "BANNED" for s in statuses):
-        return {"status": "BANNED", "followers": 0, "following": 0}
-
-    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
 # ----------------- BACKGROUND MONITOR LOOP -----------------
 def monitor_loop():
@@ -1435,4 +1453,3 @@ if __name__ == "__main__":
     _verify_integrity()
     print("[INIT] Dual Tracker Bot is active with Resilient Multi-Route Engine...", flush=True)
     run_bot_polling()
-

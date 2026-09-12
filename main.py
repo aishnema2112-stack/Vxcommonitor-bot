@@ -12,6 +12,7 @@ from telebot import types
 from datetime import datetime, timezone, timedelta
 import psycopg2
 
+# Force unbuffered stdout for Render logs
 sys.stdout.reconfigure(line_buffering=True)
 
 # ----------------- TAMPER-PROOF INTEGRITY -----------------
@@ -53,16 +54,13 @@ def run_server():
 threading.Thread(target=run_server, daemon=True).start()
 
 # ----------------- CONFIGURATION & CONSTANTS -----------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
-PROXY_URL = os.environ.get("PROXY_URL", "").strip()
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "").strip()
-RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "").strip()
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+INSTAGRAM_SESSION_ID = os.environ.get("INSTAGRAM_SESSION_ID", "")
 
 ADMIN_PASSWORD = "mansour$vx"
 PREMIUM_PASSWORD = "Hamzai@1"
-CHECK_INTERVAL_SECONDS = 12
+CHECK_INTERVAL_SECONDS = 10
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -70,7 +68,7 @@ db_lock = threading.Lock()
 admin_state = {}
 user_message_history = {}
 
-# ----------------- NEON POSTGRESQL ENGINE -----------------
+# ----------------- NEON POSTGRESQL ENGINE (PSYCOPG2) -----------------
 def get_db_connection():
     clean_url = DATABASE_URL.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
     return psycopg2.connect(clean_url, sslmode="require", connect_timeout=10)
@@ -104,8 +102,6 @@ def get_default_db_data():
         "premium_pass_claimed": False,
         "users": {},
         "groups": [],
-        "session_id": INSTAGRAM_SESSION_ID,
-        "proxy_url": PROXY_URL,
         "settings": {
             "maintenance": False,
             "new_user_notify": True
@@ -303,15 +299,6 @@ def extract_username(message):
     clean = re.sub(r'[^a-z0-9._]', '', raw)
     return clean if clean else None
 
-def auto_delete_after_delay(chat_id, message_id, delay_seconds=300):
-    def _delete():
-        time.sleep(delay_seconds)
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-    threading.Thread(target=_delete, daemon=True).start()
-
 # ----------------- MEDIA SENDER ENGINE -----------------
 def send_custom_media(chat_id, key, caption, reply_to=None, reply_markup=None):
     media_data = db.get("media", {}).get(key)
@@ -423,42 +410,16 @@ def handle_verify_callback(call):
         except Exception:
             pass
 
-# ----------------- BULLETPROOF INSTAGRAM ENGINE -----------------
+# ----------------- ORIGINAL SMOOTH INSTAGRAM ENGINE -----------------
 def check_single_account(username):
     username = username.strip().lower().replace("@", "")
     if not username:
         return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-    active_session = db.get("session_id") or INSTAGRAM_SESSION_ID
-    active_proxy = db.get("proxy_url") or PROXY_URL
+    cookies = {}
+    if INSTAGRAM_SESSION_ID:
+        cookies["sessionid"] = INSTAGRAM_SESSION_ID
 
-    proxies = {"http": active_proxy, "https": active_proxy} if active_proxy else None
-
-    # LAYER 1: RapidAPI Fallback (Highest Accuracy if configured)
-    if RAPIDAPI_KEY and RAPIDAPI_HOST:
-        try:
-            rap_url = f"https://{RAPIDAPI_HOST}/user/{username}"
-            headers_rap = {
-                "X-RapidAPI-Key": RAPIDAPI_KEY,
-                "X-RapidAPI-Host": RAPIDAPI_HOST
-            }
-            r_rap = requests.get(rap_url, headers=headers_rap, timeout=7)
-            if r_rap.status_code == 200:
-                rap_data = r_rap.json()
-                u_obj = rap_data.get("data") or rap_data.get("user") or rap_data
-                if u_obj and (u_obj.get("id") or u_obj.get("pk")):
-                    return {
-                        "status": "ACTIVE",
-                        "followers": u_obj.get("follower_count") or u_obj.get("edge_followed_by", {}).get("count", 0),
-                        "following": u_obj.get("following_count") or u_obj.get("edge_follow", {}).get("count", 0)
-                    }
-            elif r_rap.status_code in (404, 400):
-                return {"status": "BANNED", "followers": 0, "following": 0}
-        except Exception as e:
-            print(f"[RAPIDAPI LAYER EXCEPTION] {e}", flush=True)
-
-    # LAYER 2: Instagram Direct Web Profile Info
-    cookies = {"sessionid": active_session} if active_session else {}
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "X-IG-App-ID": "936619743392459",
@@ -469,15 +430,17 @@ def check_single_account(username):
 
     try:
         api_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-        r_api = requests.get(api_url, headers=headers, cookies=cookies, proxies=proxies, timeout=6)
+        r_api = requests.get(api_url, headers=headers, cookies=cookies, timeout=5)
         if r_api.status_code == 200:
             data = r_api.json()
             user_data = data.get("data", {}).get("user")
             if user_data and user_data.get("id"):
+                followers = user_data.get("edge_followed_by", {}).get("count", 0)
+                following = user_data.get("edge_follow", {}).get("count", 0)
                 return {
                     "status": "ACTIVE",
-                    "followers": user_data.get("edge_followed_by", {}).get("count", 0),
-                    "following": user_data.get("edge_follow", {}).get("count", 0)
+                    "followers": followers,
+                    "following": following
                 }
             return {"status": "BANNED", "followers": 0, "following": 0}
         elif r_api.status_code in (404, 410):
@@ -485,20 +448,19 @@ def check_single_account(username):
     except Exception:
         pass
 
-    # LAYER 3: Instagram Embed Validation
     try:
         embed_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
         embed_url = f"https://www.instagram.com/{username}/embed/"
-        r_embed = requests.get(embed_url, headers=embed_headers, proxies=proxies, timeout=6)
+        r_embed = requests.get(embed_url, headers=embed_headers, timeout=6)
         
         if r_embed.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
             
         embed_text = r_embed.text
-        if any(err in embed_text for err in ["Page Not Found", "The link you followed may be broken"]):
+        if any(err in embed_text for err in ["Page Not Found", "unavailable", "The link you followed may be broken"]):
             return {"status": "BANNED", "followers": 0, "following": 0}
 
         if "View profile" in embed_text or "Watch on Instagram" in embed_text:
@@ -506,10 +468,9 @@ def check_single_account(username):
     except Exception:
         pass
 
-    # LAYER 4: HTML meta tag parsing
     try:
         web_url = f"https://www.instagram.com/{username}/"
-        r_web = requests.get(web_url, headers=headers, cookies=cookies, proxies=proxies, timeout=6, allow_redirects=True)
+        r_web = requests.get(web_url, headers=headers, cookies=cookies, timeout=6, allow_redirects=True)
         
         if r_web.status_code in (404, 410):
             return {"status": "BANNED", "followers": 0, "following": 0}
@@ -528,13 +489,15 @@ def check_single_account(username):
                     "followers": counts[0],
                     "following": counts[1]
                 }
-            return {"status": "ACTIVE", "followers": "N/A", "following": "N/A"}
+
+        return {"status": "BANNED", "followers": 0, "following": 0}
 
     except Exception as e:
         print(f"[SCRAPER EXCEPTION] {e}", flush=True)
+        return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
 
-    # SAFE DEFAULT: Agar sab fail ho to UNKNOWN dega (BANNED assume karke galat alert nahi karega)
-    return {"status": "UNKNOWN", "followers": "N/A", "following": "N/A"}
+def get_instagram_details(username):
+    return check_single_account(username)
 
 # ----------------- BACKGROUND MONITOR LOOP -----------------
 def monitor_loop():
@@ -542,50 +505,45 @@ def monitor_loop():
         try:
             _verify_integrity()
 
-            # UNBAN TRACKER (/ub)
             unban_items = list(db.get("unban_monitors", {}).items())
             if unban_items:
                 for user, info in unban_items:
                     res = check_single_account(user)
                     if res["status"] == "ACTIVE":
-                        time.sleep(2)
-                        confirm = check_single_account(user)
-                        if confirm["status"] == "ACTIVE":
-                            elapsed = time.time() - info.get("start_time", time.time())
-                            time_str = format_time_taken(elapsed)
-                            f_by = format_count(confirm["followers"])
-                            f_to = format_count(confirm["following"])
-                            user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
-                            ig_link = get_ig_link(user)
+                        elapsed = time.time() - info.get("start_time", time.time())
+                        time_str = format_time_taken(elapsed)
+                        f_by = format_count(res["followers"])
+                        f_to = format_count(res["following"])
+                        user_mention = get_user_mention(info.get("user_id"), info.get("user_name"))
+                        ig_link = get_ig_link(user)
 
-                            caption = (
-                                "🎉 <b>Instagram Account Recovered</b>\n\n"
-                                f"Target: <b>{ig_link}</b>\n"
-                                f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
-                                f"Time Taken: <code>{time_str}</code>\n"
-                                f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
-                                f"👤 Requested by: {user_mention}"
-                            )
+                        caption = (
+                            "🎉 <b>Instagram Account Recovered</b>\n\n"
+                            f"Target: <b>{ig_link}</b>\n"
+                            f"Followers: <code>{f_by}</code> | Following: <code>{f_to}</code>\n"
+                            f"Time Taken: <code>{time_str}</code>\n"
+                            f"Recovered at: <code>{get_current_time_str()}</code>\n\n"
+                            f"👤 Requested by: {user_mention}"
+                        )
 
-                            sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
-                            try:
-                                bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
-                            except Exception:
-                                pass
+                        sent_msg = send_custom_media(info["chat_id"], "ub_done", caption)
+                        try:
+                            bot.pin_chat_message(info["chat_id"], sent_msg.message_id)
+                        except Exception:
+                            pass
 
-                            db["unban_monitors"].pop(user, None)
-                            save_db(db)
+                        db["unban_monitors"].pop(user, None)
+                        save_db(db)
                     time.sleep(2)
 
-            # BAN TRACKER (/b)
             ban_items = list(db.get("ban_monitors", {}).items())
             if ban_items:
                 for user, info in ban_items:
                     res = check_single_account(user)
                     if res["status"] == "BANNED":
-                        time.sleep(4)
-                        confirm = check_single_account(user)
-                        if confirm["status"] == "BANNED":
+                        time.sleep(3)
+                        recheck = check_single_account(user)
+                        if recheck["status"] == "BANNED":
                             elapsed = time.time() - info.get("start_time", time.time())
                             time_str = format_time_taken(elapsed)
                             f_by = format_count(info.get("followers", "N/A"))
@@ -619,19 +577,15 @@ def monitor_loop():
 
 threading.Thread(target=monitor_loop, daemon=True).start()
 
-# ----------------- ADMIN DASHBOARD & CONFIGURATION -----------------
+# ----------------- ADMIN DASHBOARD & CLAIM HANDLERS -----------------
 def get_admin_panel_markup():
     m_status = "🟢 ON" if db.get("settings", {}).get("maintenance", False) else "⚪ OFF"
     n_status = "🔔 ON" if db.get("settings", {}).get("new_user_notify", True) else "🔕 OFF"
-    sess_status = "🟢 Set" if db.get("session_id") else "⚪ None"
-    prox_status = "🟢 Set" if db.get("proxy_url") else "⚪ None"
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("📬 Mailing", callback_data="admin_mailing_select"),
         types.InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"),
-        types.InlineKeyboardButton(f"🔑 Session ID ({sess_status})", callback_data="admin_session_menu"),
-        types.InlineKeyboardButton(f"🌐 Proxy URL ({prox_status})", callback_data="admin_proxy_menu"),
         types.InlineKeyboardButton(f"🛠 Maintenance ({m_status})", callback_data="toggle_maintenance"),
         types.InlineKeyboardButton(f"👤 New User ({n_status})", callback_data="toggle_notify"),
         types.InlineKeyboardButton("🖼 Manage Media", callback_data="admin_media"),
@@ -687,7 +641,7 @@ def handle_admin(message):
     )
     bot.reply_to(message, admin_text, reply_markup=get_admin_panel_markup())
 
-# ----------------- COMMANDS: /ub, /b, /r, /status -----------------
+# ----------------- REMOVE MONITOR COMMAND (/r username) [ENGLISH] -----------------
 @bot.message_handler(commands=['r', 'remove_monitor'])
 def handle_remove_monitor(message):
     if not check_access(message):
@@ -715,168 +669,6 @@ def handle_remove_monitor(message):
     else:
         bot.reply_to(message, f"ℹ️ Target <b>{ig_link}</b> was not found in the active monitoring list.")
 
-@bot.message_handler(commands=['ub', 'unban'])
-def handle_unban_request(message):
-    if not check_access(message):
-        return
-
-    username = extract_username(message)
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name or "User"
-    user_mention = get_user_mention(user_id, user_name)
-
-    if not username:
-        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/ub username</code>\n<b>Example:</b> <code>/ub gt5available</code>")
-        return
-
-    ig_link = get_ig_link(username)
-
-    if username in db.get("unban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
-        return
-
-    status_data = check_single_account(username)
-    if status_data["status"] == "ACTIVE":
-        caption = (
-            f"ℹ️ <b>{ig_link}</b> is already active.\n\n"
-            f"👤 Requested by: {user_mention}"
-        )
-        send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
-        return
-
-    req_time = get_current_time_str()
-    req_date = get_current_date_str()
-
-    db.setdefault("unban_monitors", {})[username] = {
-        "chat_id": message.chat.id,
-        "user_id": user_id,
-        "user_name": user_name,
-        "start_time": time.time(),
-        "requested_time": req_time,
-        "requested_date": req_date
-    }
-    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
-    if str(user_id) in db.get("users", {}):
-        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
-    save_db(db)
-
-    caption = (
-        "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
-        f"Target: <b>{ig_link}</b>\n"
-        "You'll be notified as soon as the account is active.\n\n"
-        f"👤 Requested by: {user_mention}"
-    )
-    send_custom_media(message.chat.id, "ub_req", caption, reply_to=message.message_id)
-
-@bot.message_handler(commands=['b', 'ban'])
-def handle_ban_request(message):
-    if not check_access(message):
-        return
-
-    username = extract_username(message)
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name or "User"
-    user_mention = get_user_mention(user_id, user_name)
-
-    if not username:
-        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/b username</code>\n<b>Example:</b> <code>/b gt5available</code>")
-        return
-
-    ig_link = get_ig_link(username)
-
-    if username in db.get("ban_monitors", {}):
-        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
-        return
-
-    status_data = check_single_account(username)
-    if status_data["status"] == "BANNED":
-        caption = (
-            f"ℹ️ <b>{ig_link}</b> is already banned or unavailable.\n\n"
-            f"👤 Requested by: {user_mention}"
-        )
-        send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
-        return
-
-    req_time = get_current_time_str()
-    req_date = get_current_date_str()
-
-    db.setdefault("ban_monitors", {})[username] = {
-        "chat_id": message.chat.id,
-        "user_id": user_id,
-        "user_name": user_name,
-        "followers": status_data["followers"],
-        "following": status_data["following"],
-        "start_time": time.time(),
-        "requested_time": req_time,
-        "requested_date": req_date
-    }
-    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
-    if str(user_id) in db.get("users", {}):
-        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
-    save_db(db)
-
-    caption = (
-        "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
-        f"Target: <b>{ig_link}</b>\n"
-        f"Current Status: <code>Active</code>\n"
-        "You'll be notified as soon as the account is banned.\n\n"
-        f"👤 Requested by: {user_mention}"
-    )
-    send_custom_media(message.chat.id, "b_req", caption, reply_to=message.message_id)
-
-@bot.message_handler(commands=['status', 's'])
-def handle_status(message):
-    if not check_access(message):
-        return
-
-    user_id = message.from_user.id
-    unbans = db.get("unban_monitors", {})
-    bans = db.get("ban_monitors", {})
-
-    user_unbans = {u: d for u, d in unbans.items() if d.get("user_id") == user_id}
-    user_bans = {u: d for u, d in bans.items() if d.get("user_id") == user_id}
-
-    if not user_unbans and not user_bans:
-        bot.reply_to(message, "ℹ️ You have no active accounts currently in your monitoring list.")
-        return
-
-    lines = ["📊 <b>Your Active Monitors</b>\n"]
-    if user_unbans:
-        lines.append("<b>Awaiting Recovery (/ub):</b>")
-        for u, d in user_unbans.items():
-            t = format_time_taken(time.time() - d["start_time"])
-            ig_link = get_ig_link(u)
-            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
-
-    if user_bans:
-        lines.append("\n<b>Awaiting Ban (/b):</b>")
-        for u, d in user_bans.items():
-            t = format_time_taken(time.time() - d["start_time"])
-            ig_link = get_ig_link(u)
-            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
-
-    bot.reply_to(message, "\n".join(lines))
-
-@bot.message_handler(commands=['start', 'help', 'h'])
-def handle_start_help(message):
-    if not check_access(message):
-        return
-
-    mention = get_user_mention(message.from_user.id, message.from_user.first_name)
-    welcome_text = (
-        f"👋 <b>Welcome {mention}</b>\n\n"
-        "<b>Available Commands:</b>\n"
-        "• <code>/ub username</code> — Monitor account recovery / unban\n"
-        "• <code>/b username</code> — Monitor account for ban\n"
-        "• <code>/r username</code> — Remove account from monitoring\n"
-        "• <code>/status</code> — Monitored accounts list\n"
-        "• <code>/remove</code> — Remove your Admin/Premium access\n"
-        "• <code>/help</code> — Instructions\n\n"
-        f"Powered by: {DEVELOPER_TAG}"
-    )
-    bot.reply_to(message, welcome_text)
-
-# ----------------- ADMIN CALLBACKS & CONFIG ENGINE -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("toggle_") or call.data.startswith("set_") or call.data.startswith("see_") or call.data.startswith("del_") or call.data.startswith("btn_") or call.data.startswith("col_") or call.data.startswith("mail_") or call.data == "reset_all_media")
 def handle_admin_callbacks(call):
     user_id = call.from_user.id
@@ -893,73 +685,6 @@ def handle_admin_callbacks(call):
             pass
         return
 
-    # Session ID Management
-    if data == "admin_session_menu":
-        curr_sess = db.get("session_id", "Not Configured")
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("✏️ Update Session ID", callback_data="admin_set_session"),
-            types.InlineKeyboardButton("🗑 Clear Session ID", callback_data="admin_clear_session"),
-            types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
-        )
-        sess_preview = (curr_sess[:15] + "..." + curr_sess[-8:]) if len(curr_sess) > 25 else curr_sess
-        bot.edit_message_text(
-            f"🔑 <b>Instagram Session ID Management</b>\n\n"
-            f"<b>Current Value:</b> <code>{sess_preview}</code>\n\n"
-            "Update your active sessionid directly without touching Render.",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=markup
-        )
-        return
-
-    if data == "admin_set_session":
-        admin_state[user_id] = "waiting_session_input"
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
-        bot.edit_message_text("🔑 <b>Send New Instagram `sessionid` Cookie:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-        return
-
-    if data == "admin_clear_session":
-        db["session_id"] = ""
-        save_db(db)
-        bot.answer_callback_query(call.id, "Session ID Cleared!", show_alert=True)
-        bot.edit_message_text("🔧 <b>Administrator Control Panel</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
-        return
-
-    # Proxy Management
-    if data == "admin_proxy_menu":
-        curr_proxy = db.get("proxy_url", "None")
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("✏️ Update Proxy URL", callback_data="admin_set_proxy"),
-            types.InlineKeyboardButton("🗑 Remove Proxy", callback_data="admin_clear_proxy"),
-            types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
-        )
-        bot.edit_message_text(
-            f"🌐 <b>Proxy Configuration</b>\n\n"
-            f"<b>Current Proxy:</b> <code>{curr_proxy}</code>\n\n"
-            "Format: <code>http://user:pass@host:port</code>",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=markup
-        )
-        return
-
-    if data == "admin_set_proxy":
-        admin_state[user_id] = "waiting_proxy_input"
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
-        bot.edit_message_text("🌐 <b>Send New Proxy URL:</b>\n\nExample: <code>http://user:pass@ip:port</code>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-        return
-
-    if data == "admin_clear_proxy":
-        db["proxy_url"] = ""
-        save_db(db)
-        bot.answer_callback_query(call.id, "Proxy Removed!", show_alert=True)
-        bot.edit_message_text("🔧 <b>Administrator Control Panel</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
-        return
-
     if data == "admin_mailing_select":
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
@@ -969,7 +694,8 @@ def handle_admin_callbacks(call):
             types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_back")
         )
         bot.edit_message_text(
-            "📬 <b>Select Mailing Broadcast Target:</b>",
+            "📬 <b>Select Mailing Broadcast Target:</b>\n\n"
+            "Choose where you want the broadcast message to be delivered:",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup
@@ -983,7 +709,8 @@ def handle_admin_callbacks(call):
         markup.add(types.InlineKeyboardButton("🚫 Cancel", callback_data="cancel_action"))
         bot.edit_message_text(
             f"📬 <b>Broadcast Mode: ({target_mode.upper()})</b>\n\n"
-            "Send or Forward the message right now.",
+            "Send or <b>FORWARD</b> the message right now.\n"
+            "Supports Text, Photos, GIFs, Videos, or Files.",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup
@@ -1104,7 +831,7 @@ def handle_admin_callbacks(call):
         db["media"] = default_media
         save_db(db)
         bot.answer_callback_query(call.id, "✅ All media reset to original defaults!", show_alert=True)
-        bot.edit_message_text("🔧 <b>Administrator Control Panel</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
+        bot.edit_message_text("🔧 <b>Administrator Control Panel</b>\n\nSelect an action below:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_admin_panel_markup())
         return
 
     if data.startswith("set_"):
@@ -1206,28 +933,12 @@ def process_admin_inputs(message):
             db.setdefault("premium_users", []).append(user_id)
             db["premium_pass_claimed"] = True
             save_db(db)
-            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nYou have been granted Premium User privileges.")
+            bot.reply_to(message, "💎 <b>Premium Access Activated!</b>\nYou have been granted Premium User privileges. You can now use <code>/ub</code>, <code>/b</code>, and <code>/status</code> without any restrictions.")
             return
 
         else:
             bot.reply_to(message, "❌ <b>Incorrect Password!</b> Access Denied.")
             return
-
-    if state == "waiting_session_input":
-        admin_state.pop(user_id, None)
-        new_sess = message.text.strip() if message.text else ""
-        db["session_id"] = new_sess
-        save_db(db)
-        bot.reply_to(message, "✅ <b>Instagram Session ID Updated Successfully!</b>", reply_markup=get_admin_panel_markup())
-        return
-
-    if state == "waiting_proxy_input":
-        admin_state.pop(user_id, None)
-        new_prox = message.text.strip() if message.text else ""
-        db["proxy_url"] = new_prox
-        save_db(db)
-        bot.reply_to(message, "✅ <b>Proxy URL Updated Successfully!</b>", reply_markup=get_admin_panel_markup())
-        return
 
     if message.text and message.text.lower() in ["/cancel", "cancel"]:
         admin_state.pop(user_id, None)
@@ -1311,6 +1022,169 @@ def process_admin_inputs(message):
         else:
             bot.reply_to(message, "❌ Invalid media type. Please send Photo, GIF, Video, or Sticker.")
 
+@bot.message_handler(commands=['start', 'help', 'h'])
+def handle_start_help(message):
+    if not check_access(message):
+        return
+
+    mention = get_user_mention(message.from_user.id, message.from_user.first_name)
+    welcome_text = (
+        f"👋 <b>Welcome {mention}</b>\n\n"
+        "<b>Available Commands:</b>\n"
+        "• <code>/ub username</code> — Monitor account recovery / unban\n"
+        "• <code>/b username</code> — Monitor account for ban\n"
+        "• <code>/r username</code> — Remove account from monitoring\n"
+        "• <code>/status</code> — Monitored accounts list\n"
+        "• <code>/remove</code> — Remove your Admin/Premium access\n"
+        "• <code>/help</code> — Instructions\n\n"
+        f"Powered by: {DEVELOPER_TAG}"
+    )
+    bot.reply_to(message, welcome_text)
+
+@bot.message_handler(commands=['ub', 'unban'])
+def handle_unban_request(message):
+    if not check_access(message):
+        return
+
+    username = extract_username(message)
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name or "User"
+    user_mention = get_user_mention(user_id, user_name)
+
+    if not username:
+        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/ub username</code>\n<b>Example:</b> <code>/ub gt5available</code>")
+        return
+
+    ig_link = get_ig_link(username)
+
+    if username in db.get("unban_monitors", {}):
+        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
+        return
+
+    status_data = check_single_account(username)
+    if status_data["status"] == "ACTIVE":
+        caption = (
+            f"ℹ️ <b>{ig_link}</b> is already active.\n\n"
+            f"👤 Requested by: {user_mention}"
+        )
+        send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
+        return
+
+    req_time = get_current_time_str()
+    req_date = get_current_date_str()
+
+    db.setdefault("unban_monitors", {})[username] = {
+        "chat_id": message.chat.id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "start_time": time.time(),
+        "requested_time": req_time,
+        "requested_date": req_date
+    }
+    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
+    if str(user_id) in db.get("users", {}):
+        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
+    save_db(db)
+
+    caption = (
+        "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
+        f"Target: <b>{ig_link}</b>\n"
+        "You'll be notified as soon as the account is active.\n\n"
+        f"👤 Requested by: {user_mention}"
+    )
+
+    send_custom_media(message.chat.id, "ub_req", caption, reply_to=message.message_id)
+
+@bot.message_handler(commands=['b', 'ban'])
+def handle_ban_request(message):
+    if not check_access(message):
+        return
+
+    username = extract_username(message)
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name or "User"
+    user_mention = get_user_mention(user_id, user_name)
+
+    if not username:
+        bot.reply_to(message, "⚠️ <b>Usage:</b> <code>/b username</code>\n<b>Example:</b> <code>/b gt5available</code>")
+        return
+
+    ig_link = get_ig_link(username)
+
+    if username in db.get("ban_monitors", {}):
+        bot.reply_to(message, f"⚠️ <b>{ig_link}</b> is already being monitored.")
+        return
+
+    status_data = check_single_account(username)
+    if status_data["status"] == "BANNED":
+        caption = (
+            f"ℹ️ <b>{ig_link}</b> is already banned or unavailable.\n\n"
+            f"👤 Requested by: {user_mention}"
+        )
+        send_custom_media(message.chat.id, "deny", caption, reply_to=message.message_id)
+        return
+
+    req_time = get_current_time_str()
+    req_date = get_current_date_str()
+
+    db.setdefault("ban_monitors", {})[username] = {
+        "chat_id": message.chat.id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "followers": status_data["followers"],
+        "following": status_data["following"],
+        "start_time": time.time(),
+        "requested_time": req_time,
+        "requested_date": req_date
+    }
+    db.setdefault("stats", {})["total_monitored"] = db.get("stats", {}).get("total_monitored", 0) + 1
+    if str(user_id) in db.get("users", {}):
+        db["users"][str(user_id)]["req_count"] = db["users"][str(user_id)].get("req_count", 0) + 1
+    save_db(db)
+
+    caption = (
+        "🔍 <b>Instagram Account Monitoring Added</b>\n\n"
+        f"Target: <b>{ig_link}</b>\n"
+        f"Current Status: <code>Active</code>\n"
+        "You'll be notified as soon as the account is banned.\n\n"
+        f"👤 Requested by: {user_mention}"
+    )
+
+    send_custom_media(message.chat.id, "b_req", caption, reply_to=message.message_id)
+
+@bot.message_handler(commands=['status', 's'])
+def handle_status(message):
+    if not check_access(message):
+        return
+
+    user_id = message.from_user.id
+    unbans = db.get("unban_monitors", {})
+    bans = db.get("ban_monitors", {})
+
+    user_unbans = {u: d for u, d in unbans.items() if d.get("user_id") == user_id}
+    user_bans = {u: d for u, d in bans.items() if d.get("user_id") == user_id}
+
+    if not user_unbans and not user_bans:
+        bot.reply_to(message, "ℹ️ You have no active accounts currently in your monitoring list.")
+        return
+
+    lines = ["📊 <b>Your Active Monitors</b>\n"]
+    if user_unbans:
+        lines.append("<b>Awaiting Recovery (/ub):</b>")
+        for u, d in user_unbans.items():
+            t = format_time_taken(time.time() - d["start_time"])
+            ig_link = get_ig_link(u)
+            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
+
+    if user_bans:
+        lines.append("\n<b>Awaiting Ban (/b):</b>")
+        for u, d in user_bans.items():
+            t = format_time_taken(time.time() - d["start_time"])
+            ig_link = get_ig_link(u)
+            lines.append(f"• <b>{ig_link}</b> (Elapsed: <code>{t}</code>)")
+
+    bot.reply_to(message, "\n".join(lines))
+
 @bot.message_handler(func=lambda msg: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
 def handle_unrecognized_input(message):
     user = message.from_user
@@ -1352,7 +1226,7 @@ def handle_unrecognized_input(message):
 def run_bot_polling():
     while True:
         try:
-            print("[BOT] Clearing webhooks and starting polling safely...", flush=True)
+            print("[BOT] Clearing previous webhooks and starting Polling safely...", flush=True)
             bot.remove_webhook()
             time.sleep(3)
             bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True)
@@ -1362,6 +1236,5 @@ def run_bot_polling():
 
 if __name__ == "__main__":
     _verify_integrity()
-    print("[INIT] Dual Tracker Bot is active and running with Multi-Layer Engine...", flush=True)
+    print("[INIT] Dual Tracker Bot is active and running with 100% Stable Scraper Engine...", flush=True)
     run_bot_polling()
-
